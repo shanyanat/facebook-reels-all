@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Reels Parallel Generator",
+  "version": "1.0",
+  "description": "Parallel image and video generation for Facebook Reels",
+  "permissions": ["tabs", "downloads", "scripting", "storage", "alarms", "sidePanel"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://labs.google/*",
+    "https://*.googleapis.com/*",
+    "https://*.google.com/*",
+    "http://localhost:7788/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content/chatgpt_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://labs.google/fx/*"],
+      "js": ["content/flow.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

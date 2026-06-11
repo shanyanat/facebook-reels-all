@@ -1,0 +1,29 @@
+# ============================================================
+#  .gitignore for the whole "Facebook Reels All" workspace
+#  (bot project + all extensions).
+#  Patterns have no leading slash, so they match in EVERY
+#  subfolder — e.g. "Facebook Reels to America/data/".
+#  See "Facebook Reels to America/CLAUDE.md": these are
+#  per-machine DATA and must never be committed/copied.
+# ============================================================
+
+# --- Per-machine DATA (built locally by the bot) ---
+data/
+pages/
+complete/
+
+# --- Chrome automation profile (per-machine logins) ---
+chrome-bot/
+
+# --- Python cache ---
+__pycache__/
+*.pyc
+
+# --- Backup / corrupt / lock artifacts (safety net) ---
+*.bak
+*.broken
+*.lock
+*.corrupt-*
+
+# --- Machine-local Claude Code settings ---
+**/.claude/settings.local.json

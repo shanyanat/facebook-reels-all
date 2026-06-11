@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: sans-serif; width: 380px; padding: 12px; font-size: 13px; margin: 0; }
+  h2 { margin: 0 0 8px; font-size: 15px; color: #1a73e8; }
+  #status-msg { font-size: 11px; margin-bottom: 8px; color: #555; }
+  .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  select, button { padding: 4px 10px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; font-size: 12px; }
+  button.start    { background: #1a73e8; color: white; border-color: #1a73e8; }
+  button.stop     { background: #d93025; color: white; border-color: #d93025; }
+  button.reset    { background: #f1f3f4; border-color: #ccc; font-size: 10px; padding: 2px 6px; margin-top: 3px; }
+  button.stop-slot{ background: #e65100; color: white; border-color: #e65100; font-size: 10px; padding: 2px 6px; margin-top: 3px; margin-left: 4px; }
+  .slot { padding: 6px 8px; margin: 3px 0; border-radius: 4px; border: 1px solid #e0e0e0; }
+  .slot.running  { border-color: #1a73e8; background: #e8f0fe; }
+  .slot.stopping { border-color: #e65100; background: #fff3e0; }
+  .slot.error    { border-color: #d93025; background: #fce8e6; }
+  .slot.done     { border-color: #0f9d58; background: #e6f4ea; }
+  .slot-title    { font-weight: 600; font-size: 12px; }
+  .slot-prog     { color: #555; font-size: 11px; margin-top: 1px; }
+
+  /* Queue section */
+  .queue-hdr  { display: flex; align-items: center; gap: 4px; font-weight: 600; font-size: 12px; margin: 8px 0 3px; }
+  .sel-count  { color: #1a73e8; font-weight: normal; font-size: 11px; margin-left: auto; }
+  button.refresh-btn { background: none; border: none; padding: 1px 3px; font-size: 14px; cursor: pointer; color: #666; line-height: 1; }
+  #projects-list { max-height: 210px; overflow-y: auto; }
+  .project  { display: flex; align-items: center; gap: 5px; padding: 3px 0; border-bottom: 1px solid #f0f0f0; font-size: 11px; }
+  .proj-check { width: 13px; height: 13px; cursor: pointer; flex-shrink: 0; margin: 0; accent-color: #1a73e8; }
+  .proj-nochk { display: inline-block; width: 13px; flex-shrink: 0; }
+  .proj-id    { font-weight: 600; flex-shrink: 0; }
+  .proj-page  { color: #999; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .slot-tag   { font-size: 9px; background: #e8f0fe; color: #1a73e8; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
+  .phase-tag  { font-size: 9px; background: #e3f2fd; color: #0277bd; padding: 1px 4px; border-radius: 3px; margin-left: 3px; vertical-align: middle; }
+  .pill         { padding: 1px 6px; border-radius: 10px; background: #e0e0e0; font-size: 10px; flex-shrink: 0; }
+  .pill.pending              { background: #fff3e0; color: #e65100; }
+  .pill.images_done          { background: #e3f2fd; color: #0277bd; }
+  .pill.storyboard_done      { background: #e8eaf6; color: #3949ab; }
+  .pill.videos_in_progress   { background: #fce4ec; color: #880e4f; }
+  .pill.videos_done          { background: #e0f2f1; color: #00695c; }
+  .pill.complete             { background: #e8f5e9; color: #2e7d32; }
+  .pill.archived             { background: #f3e5f5; color: #6a1b9a; }
+  #no-monitor    { color: #d93025; font-size: 11px; margin-top: 4px; }
+  #stale-monitor { color: #e65100; font-size: 10px; margin-top: 2px; }
+  .queue-hint { color: #999; font-size: 10px; margin-bottom: 3px; font-style: italic; }
+</style>
+</head>
+<body>
+<h2>Reels Parallel Generator</h2>
+<div id="status-msg">Loading...</div>
+<div class="controls">
+  <label>Slots:&nbsp;<select id="slot-count">
+    <option value="1">1</option>
+    <option value="2" selected>2</option>
+    <option value="3">3</option>
+  </select></label>
+  <button class="start" id="start-btn">▶ Start</button>
+  <button class="stop"  id="stop-btn"  style="display:none">■ Stop All</button>
+</div>
+<div id="slots-container"></div>
+<div class="queue-hdr">
+  Queue
+  <button class="refresh-btn" id="refresh-btn" title="Refresh status">↺</button>
+  <span id="sel-count" class="sel-count"></span>
+</div>
+<div class="queue-hint">Check reels below before clicking Start</div>
+<div id="projects-list"></div>
+<div id="no-monitor"    style="display:none">⚠ monitor.py is not running</div>
+<div id="stale-monitor" style="display:none">⚠ Restart monitor.py — status may be stale</div>
+<script src="popup.js"></script>
+</body>
+</html>

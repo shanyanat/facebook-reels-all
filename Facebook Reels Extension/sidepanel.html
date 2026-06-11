@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  background: #f1f3f4;
+  color: #202124;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+.header {
+  background: #1a73e8;
+  color: white;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+.header-title { font-size: 15px; font-weight: 600; flex: 1; letter-spacing: 0.1px; }
+.status-pill {
+  display: flex; align-items: center; gap: 5px;
+  background: rgba(255,255,255,0.18);
+  padding: 3px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 500;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #80cbc4;
+  flex-shrink: 0;
+}
+.status-dot.running {
+  background: #a5d6a7;
+  box-shadow: 0 0 0 2px rgba(165,214,167,0.4);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(165,214,167,0.6); }
+  50%       { box-shadow: 0 0 0 4px rgba(165,214,167,0.1); }
+}
+
+/* ── Cards ── */
+.card {
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  overflow: hidden;
+  margin: 12px 12px 0;
+}
+
+/* ── Controls ── */
+.controls {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  flex-wrap: wrap;
+}
+.slots-label { font-size: 12px; color: #5f6368; white-space: nowrap; }
+.slot-btns   { display: flex; gap: 3px; }
+.slot-btn {
+  width: 34px; height: 30px;
+  border: 1.5px solid #dadce0;
+  background: white; border-radius: 6px;
+  cursor: pointer; font-size: 13px; font-weight: 600; color: #444;
+  transition: all 0.12s;
+}
+.slot-btn:hover:not(:disabled) { border-color: #1a73e8; color: #1a73e8; }
+.slot-btn.active { background: #1a73e8; border-color: #1a73e8; color: white; }
+.slot-btn:disabled { opacity: 0.45; cursor: default; }
+.spacer { flex: 1; }
+.btn {
+  padding: 7px 16px; border-radius: 20px; border: none;
+  cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap;
+  transition: all 0.12s;
+}
+.btn-start { background: #1a73e8; color: white; }
+.btn-start:hover { background: #1557b0; }
+.btn-stop  { background: #d93025; color: white; }
+.btn-stop:hover  { background: #b52a1d; }
+
+/* ── Section heading ── */
+.section { margin: 12px 12px 0; }
+.section-hdr {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 700; color: #5f6368;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  margin-bottom: 6px; padding: 0 2px;
+}
+.section-hdr-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+/* ── Slot cards ── */
+.slot-card {
+  background: white; border-radius: 10px; margin-bottom: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  border-left: 4px solid #e0e0e0;
+  padding: 10px 12px;
+}
+.slot-card.running { border-left-color: #1a73e8; }
+.slot-card.error   { border-left-color: #d93025; }
+.slot-card.done    { border-left-color: #0f9d58; }
+
+.slot-row { display: flex; align-items: center; gap: 8px; }
+.globe {
+  font-size: 16px; flex-shrink: 0;
+  animation: globe-pulse 2s ease-in-out infinite;
+}
+@keyframes globe-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.7; transform: scale(0.92); }
+}
+.slot-info { flex: 1; min-width: 0; }
+.slot-name { font-weight: 600; font-size: 12px; color: #202124; }
+.slot-phase {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  padding: 1px 6px; border-radius: 4px; margin-left: 5px;
+  background: #e8f0fe; color: #1a73e8;
+  vertical-align: middle;
+}
+.slot-prog { font-size: 11px; color: #5f6368; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot-idle { font-size: 12px; color: #9aa0a6; }
+
+.btn-sm {
+  padding: 4px 10px; border-radius: 6px; border: none;
+  cursor: pointer; font-size: 11px; font-weight: 600; flex-shrink: 0;
+}
+.btn-stop-sm  { background: #fce8e6; color: #d93025; }
+.btn-stop-sm:hover  { background: #f5c6c3; }
+.btn-reset-sm { background: #f1f3f4; color: #444; }
+.btn-reset-sm:hover { background: #e8eaed; }
+
+/* ── Refresh button ── */
+.btn-refresh {
+  background: none; border: none; padding: 4px 6px;
+  cursor: pointer; color: #5f6368; border-radius: 6px;
+  font-size: 15px; line-height: 1; transition: all 0.12s;
+}
+.btn-refresh:hover { background: #f1f3f4; color: #202124; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.btn-refresh.spinning { animation: spin 0.6s linear; }
+
+/* ── Queue list ── */
+.queue-card {
+  background: white; border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  overflow: hidden;
+  max-height: 380px; overflow-y: auto;
+}
+.proj-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f3f4;
+  transition: background 0.1s;
+}
+.proj-row:last-child { border-bottom: none; }
+.proj-row:hover { background: #f8f9fa; }
+.proj-check {
+  width: 14px; height: 14px; flex-shrink: 0;
+  cursor: pointer; accent-color: #1a73e8; margin: 0;
+}
+.proj-nochk { width: 14px; flex-shrink: 0; }
+.proj-id    { font-weight: 600; font-size: 12px; flex-shrink: 0; color: #202124; }
+.proj-page  { color: #9aa0a6; font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.running-tag {
+  font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+  background: #e8f0fe; color: #1a73e8; flex-shrink: 0;
+}
+.phase-label {
+  font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px;
+  background: #e3f2fd; color: #0277bd; margin-left: 3px; vertical-align: middle;
+}
+.pill {
+  padding: 2px 7px; border-radius: 10px;
+  font-size: 10px; font-weight: 500; flex-shrink: 0;
+}
+.pill.pending              { background: #fff3e0; color: #e65100; }
+.pill.storyboard_done      { background: #e8eaf6; color: #3949ab; }
+.pill.images_done          { background: #e3f2fd; color: #0277bd; }
+.pill.videos_in_progress   { background: #fce4ec; color: #880e4f; }
+.pill.videos_partial       { background: #fce4ec; color: #880e4f; }
+.pill.videos_done          { background: #e0f2f1; color: #00695c; }
+.pill.complete             { background: #e8f5e9; color: #2e7d32; }
+.pill.archived             { background: #f3e5f5; color: #6a1b9a; }
+.pill.collected            { background: #cfd8dc; color: #37474f; }
+
+.sel-badge {
+  background: #1a73e8; color: white;
+  padding: 1px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 600;
+}
+
+/* ── Alerts ── */
+.alert {
+  margin: 12px 12px 0; padding: 9px 12px;
+  border-radius: 8px; font-size: 11px;
+  display: flex; align-items: center; gap: 7px;
+}
+.alert.error   { background: #fce8e6; color: #c5221f; }
+.alert.warning { background: #fef7e0; color: #b06000; }
+
+.empty-msg { padding: 20px; text-align: center; color: #9aa0a6; font-size: 12px; }
+.bottom-pad { height: 16px; }
+
+/* ── Press feedback ── */
+.btn:active      { transform: scale(0.97); filter: brightness(0.88); }
+.slot-btn:active { transform: scale(0.93); }
+.btn-sm:active   { transform: scale(0.93); }
+.btn-refresh:active { transform: rotate(30deg) scale(0.92); }
+
+/* ── Stall warning ── */
+.stall-badge {
+  font-size: 10px; color: #b06000; background: #fef7e0;
+  padding: 3px 8px; border-radius: 4px;
+  margin: 4px 12px 4px 36px;
+}
+
+/* ── Progress counter in queue rows ── */
+.proj-count {
+  font-size: 10px; font-weight: 600;
+  color: #5f6368; flex-shrink: 0;
+  min-width: 30px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Slot log lines ── */
+.slot-logs {
+  padding: 5px 12px 6px 36px;
+  border-top: 1px solid #f1f3f4;
+  margin-top: 5px;
+  max-height: 88px;
+  overflow-y: auto;
+}
+.slot-log-line {
+  display: block;
+  font-size: 10px;
+  font-family: 'Courier New', Consolas, monospace;
+  color: #5f6368;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.55;
+}
+
+/* ── Utility row (Status / Collect buttons) ── */
+.util-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px 10px;
+  border-top: 1px solid #f1f3f4;
+  margin-top: 2px;
+}
+.btn-util {
+  padding: 5px 13px; border-radius: 16px; border: 1.5px solid #dadce0;
+  background: white; cursor: pointer; font-size: 11px; font-weight: 600;
+  color: #444; transition: all 0.12s; white-space: nowrap;
+}
+.btn-util:hover { border-color: #1a73e8; color: #1a73e8; }
+.btn-util:active { transform: scale(0.95); }
+.btn-collect { border-color: #0f9d58; color: #0f9d58; }
+.btn-collect:hover { background: #e8f5e9; border-color: #0f9d58; color: #0f9d58; }
+.btn-util:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Archive button (per queue row) ── */
+.btn-archive {
+  padding: 3px 9px; border-radius: 5px; border: none;
+  background: #e0f2f1; color: #00695c; cursor: pointer;
+  font-size: 10px; font-weight: 600; flex-shrink: 0;
+  transition: all 0.12s;
+}
+.btn-archive:hover { background: #b2dfdb; }
+.btn-archive:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Status modal ── */
+.modal-backdrop {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45); z-index: 100;
+  align-items: flex-start; justify-content: center; padding-top: 48px;
+}
+.modal-backdrop.open { display: flex; }
+.modal {
+  background: white; border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.22);
+  width: calc(100% - 24px); max-width: 480px;
+  max-height: calc(100vh - 80px); display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal-hdr {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex; align-items: center;
+}
+.modal-title { font-size: 14px; font-weight: 700; flex: 1; }
+.modal-close {
+  background: none; border: none; font-size: 18px; cursor: pointer;
+  color: #5f6368; padding: 0 4px; line-height: 1;
+}
+.modal-close:hover { color: #202124; }
+.modal-body { overflow-y: auto; flex: 1; }
+.modal-footer {
+  padding: 10px 16px;
+  border-top: 1px solid #e0e0e0;
+  display: flex; align-items: center; gap: 10px;
+  min-height: 48px;
+}
+.modal-footer-count { font-size: 11px; color: #5f6368; flex: 1; }
+.btn-delete-sel {
+  padding: 6px 14px; border-radius: 16px; border: none;
+  background: #d93025; color: white; cursor: pointer;
+  font-size: 11px; font-weight: 600; transition: all 0.12s;
+}
+.btn-delete-sel:hover { background: #b52a1d; }
+.btn-delete-sel:disabled { opacity: 0.5; cursor: default; }
+.status-table { width: 100%; border-collapse: collapse; }
+.status-table th {
+  font-size: 10px; font-weight: 700; color: #5f6368;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  text-align: left; padding: 6px 14px; border-bottom: 2px solid #f1f3f4;
+  white-space: nowrap; position: sticky; top: 0; background: white;
+}
+.status-table td {
+  padding: 7px 14px; border-bottom: 1px solid #f8f9fa;
+  font-size: 11px; vertical-align: middle;
+}
+.status-table tr:last-child td { border-bottom: none; }
+.status-table tr:hover td { background: #f8f9fa; }
+.status-id { font-weight: 700; color: #202124; white-space: nowrap; }
+.status-page { color: #5f6368; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-count { font-variant-numeric: tabular-nums; color: #5f6368; text-align: right; white-space: nowrap; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; bottom: 20px; left: 50%;
+  transform: translateX(-50%) translateY(60px);
+  background: #202124; color: white;
+  padding: 9px 16px; border-radius: 20px;
+  font-size: 12px; font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  opacity: 0; pointer-events: none; z-index: 200; white-space: nowrap;
+}
+.toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+.toast.error { background: #d93025; }
+.toast.success { background: #0f9d58; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-title">🎬 Reels Generator</div>
+  <div class="status-pill">
+    <div id="status-dot" class="status-dot"></div>
+    <span id="status-text">Loading…</span>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="card controls">
+  <span class="slots-label">Slots:</span>
+  <div class="slot-btns">
+    <button class="slot-btn" data-slots="1">1</button>
+    <button class="slot-btn" data-slots="2">2</button>
+    <button class="slot-btn" data-slots="3">3</button>
+    <button class="slot-btn" data-slots="4">4</button>
+    <button class="slot-btn" data-slots="5">5</button>
+  </div>
+  <div class="spacer"></div>
+  <button class="btn btn-start" id="start-btn">▶ Start</button>
+  <button class="btn btn-stop"  id="stop-btn" style="display:none">■ Stop All</button>
+  <!-- Utility row -->
+  <div class="util-row" style="width:100%">
+    <button class="btn-util" id="status-btn">📋 Status</button>
+    <div class="spacer"></div>
+    <button class="btn-util btn-collect" id="collect-btn">📦 Collect</button>
+  </div>
+</div>
+
+<!-- Alerts -->
+<div id="no-monitor"    class="alert error"   style="display:none">⚠ monitor.py is not running</div>
+<div id="stale-monitor" class="alert warning" style="display:none">⚠ Restart monitor.py — disk status may be stale</div>
+
+<!-- Active Slots -->
+<div class="section">
+  <div class="section-hdr">Active Slots</div>
+  <div id="slots-container"></div>
+</div>
+
+<!-- Queue -->
+<div class="section">
+  <div class="section-hdr">
+    Queue
+    <div class="section-hdr-right">
+      <span id="sel-count"></span>
+      <button class="btn-refresh" id="refresh-btn" title="Refresh">↺</button>
+    </div>
+  </div>
+  <div class="queue-card" id="projects-list">
+    <div class="empty-msg">Loading…</div>
+  </div>
+</div>
+
+<div class="bottom-pad"></div>
+
+<!-- Status Modal -->
+<div class="modal-backdrop" id="status-modal">
+  <div class="modal">
+    <div class="modal-hdr">
+      <span class="modal-title">📋 Project Status</span>
+      <button class="modal-close" id="modal-close-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <table class="status-table">
+        <thead>
+          <tr>
+            <th style="width:28px"></th>
+            <th>ID</th><th>Page</th><th>Status</th><th>IMG</th><th>VID</th>
+          </tr>
+        </thead>
+        <tbody id="status-tbody">
+          <tr><td colspan="6" style="text-align:center;padding:20px;color:#9aa0a6">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="modal-footer" id="status-footer" style="display:none">
+      <span class="modal-footer-count" id="status-del-count"></span>
+      <button class="btn-delete-sel" id="delete-sel-btn">🗑 Delete Selected</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+watchdog>=3.0
+playwright>=1.44
+httpx>=0.27

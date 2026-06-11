@@ -1,0 +1,28 @@
+# ============================================================
+#  .gitignore — the "NEVER COPY" list
+#  These are per-machine DATA and auto-generated files.
+#  Git will completely ignore them, so a `git pull` on any
+#  machine can never overwrite or drag along another machine's
+#  data. (See CLAUDE.md: "Never copy data/ or pages/ between machines.")
+# ============================================================
+
+# --- Per-machine DATA (built locally by the bot) ---
+data/
+pages/
+complete/
+
+# --- Chrome profile (per-machine logins) ---
+chrome-bot/
+
+# --- Auto-generated Python cache ---
+__pycache__/
+*.pyc
+
+# --- Backup / corrupt / lock artifacts (safety net) ---
+*.bak
+*.broken
+*.lock
+*.corrupt-*
+
+# --- Machine-local Claude Code settings ---
+.claude/settings.local.json

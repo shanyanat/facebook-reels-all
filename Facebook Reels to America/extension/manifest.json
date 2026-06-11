@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Facebook Reels Automation",
+  "version": "1.0",
+  "description": "Automates ChatGPT image generation and Google Flow video generation for Facebook Reels pipeline.",
+  "permissions": [
+    "downloads",
+    "storage",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://flow.google.com/*",
+    "http://localhost:7788/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "action": {
+    "default_title": "FB Reels Automation"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content_chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://flow.google.com/*"],
+      "js": ["content_flow.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

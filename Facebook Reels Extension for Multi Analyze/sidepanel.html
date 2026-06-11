@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FB Reels Multi Analyze</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+
+<!-- ══ HEADER ═══════════════════════════════════════════════════════════════ -->
+<header class="header">
+  <div class="header-title">
+    <span class="header-icon">🎬</span>
+    <div>
+      <div class="header-name">FB Reels Multi Analyze</div>
+      <div class="header-sub" id="promptBadge">No master prompt loaded</div>
+    </div>
+  </div>
+  <nav class="tab-switcher" role="tablist">
+    <button class="tab-btn tab-active" id="tabBtnAnalysis" role="tab">🎬 Analysis</button>
+    <button class="tab-btn" id="tabBtnPipeline" role="tab">⚡ Pipeline</button>
+  </nav>
+</header>
+
+<!-- ══ SCROLLABLE BODY ═══════════════════════════════════════════════════════ -->
+<div class="body">
+
+<!-- ── TAB: Analysis ─────────────────────────────────────────────────────── -->
+<div id="tabAnalysis">
+
+  <!-- ── MODE TOGGLE ───────────────────────────────────────────────────────── -->
+  <div class="mode-toggle" role="tablist">
+    <button class="mode-btn mode-active" id="modeBtnMultiPage" role="tab">
+      🗂️ Multi-Page
+      <span class="mode-btn-sub">1 clip → many pages</span>
+    </button>
+    <button class="mode-btn" id="modeBtnMultiClip" role="tab">
+      🎞️ Multi-Clip
+      <span class="mode-btn-sub">1 page → many clips</span>
+    </button>
+  </div>
+
+  <!-- ── STEP 1: Master Prompt ─────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-header">
+      <span class="step-badge">1</span>
+      <span class="card-title">Master Prompt</span>
+      <span class="card-hint" id="promptVersionBadge"></span>
+    </div>
+    <div class="card-body">
+      <button class="btn btn-outline w100" id="btnLoadPrompt">
+        📄 Select Master Prompt (.txt)
+      </button>
+      <input type="file" id="filePrompt" accept=".txt" style="display:none" />
+      <div class="file-info" id="promptInfo" style="display:none">
+        <span class="file-icon">📄</span>
+        <span class="file-name" id="promptFileName">—</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 2 (multi_page): Video Clip ────────────────────────────────────── -->
+  <section class="card mode-multi_page-only">
+    <div class="card-header">
+      <span class="step-badge">2</span>
+      <span class="card-title">Reference Video Clip</span>
+    </div>
+    <div class="card-body">
+      <button class="btn btn-outline w100" id="btnLoadVideo">
+        📹 Select Video Clip
+      </button>
+      <input type="file" id="fileVideo" accept="video/*" style="display:none" />
+      <div class="file-info" id="videoInfo" style="display:none">
+        <span class="file-icon">📹</span>
+        <div class="file-details">
+          <span class="file-name" id="videoFileName">—</span>
+          <span class="file-size" id="videoFileSize"></span>
+        </div>
+      </div>
+      <div class="warn-box" id="videoSizeWarn" style="display:none">
+        ⚠️ Large file — with many slots, memory usage will be high
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 2 (multi_clip): Page Folder & Character Sheet ──────────────────── -->
+  <section class="card mode-multi_clip-only" style="display:none">
+    <div class="card-header">
+      <span class="step-badge">2</span>
+      <span class="card-title">Page Folder &amp; Character Sheet</span>
+    </div>
+    <div class="card-body" id="sharedFolderBody">
+      <!-- Rendered by JS (renderSharedFolder) -->
+    </div>
+  </section>
+
+  <!-- ── STEP 3: Settings ───────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-header">
+      <span class="step-badge">3</span>
+      <span class="card-title">Prompt Settings</span>
+    </div>
+    <div class="card-body">
+
+      <div class="field mode-multi_page-only">
+        <label class="field-label">TOPIC</label>
+        <input type="text" id="inputTopic" class="input-text"
+               placeholder="Brief description of the video clip…" />
+      </div>
+
+      <div class="field">
+        <label class="field-label">CHARACTER</label>
+        <select id="selectCharacter" class="input-select">
+          <option value="with_char_sheet">with attached Character Sheet</option>
+          <option value="use_clip_char">use the character in the clip</option>
+        </select>
+      </div>
+
+      <div class="field-hint mode-multi_clip-only" style="display:none">
+        TOPIC, SCENES &amp; RATIO are set per clip below ↓
+      </div>
+
+      <div class="field-row mode-multi_page-only">
+        <div class="field half">
+          <label class="field-label">TOTAL SCENES</label>
+          <select id="selectScenes" class="input-select">
+            <option value="auto">🤖 AI Recommends</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8" selected>8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+          </select>
+        </div>
+        <div class="field half">
+          <label class="field-label">ASPECT RATIO</label>
+          <select id="selectRatio" class="input-select">
+            <option value="9:16" selected>9:16</option>
+            <option value="3:4">3:4</option>
+            <option value="16:9">16:9</option>
+            <option value="4:5">4:5</option>
+          </select>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── STEP 4: Output Filename ────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-header">
+      <span class="step-badge">4</span>
+      <span class="card-title">Output Filename</span>
+    </div>
+    <div class="card-body">
+      <div class="field">
+        <label class="field-label">Base Filename</label>
+        <div class="filename-row">
+          <input type="text" id="inputFilename" class="input-text"
+                 value="Brief" placeholder="Brief" />
+          <span class="filename-suffix">-N.txt</span>
+        </div>
+        <div class="filename-preview" id="filenamePreview">
+          e.g. Brief-1.txt, Brief-2.txt, Brief-3.txt
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 5: Slots ──────────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-header">
+      <span class="step-badge">5</span>
+      <span class="card-title" id="slotsCardTitle">Slots (Pages)</span>
+      <div class="slot-stepper">
+        <button class="stepper-btn" id="btnSlotMinus">−</button>
+        <span class="stepper-val" id="slotCountDisplay">3</span>
+        <button class="stepper-btn" id="btnSlotPlus">+</button>
+      </div>
+    </div>
+    <div class="card-body" id="slotsContainer">
+      <!-- Slot cards rendered by JS -->
+    </div>
+  </section>
+
+  <!-- ── START BUTTON ───────────────────────────────────────────────────────── -->
+  <div class="action-bar">
+    <div class="validation-msg" id="validationMsg"></div>
+    <button class="btn btn-start" id="btnStart" disabled>
+      ▶ Start Analysis
+    </button>
+  </div>
+
+  <!-- ── LIVE LOG ───────────────────────────────────────────────────────────── -->
+  <section class="card card-log" id="logSection" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Live Log</span>
+      <button class="btn-clear" id="btnClearLog">Clear</button>
+    </div>
+    <div class="log-container" id="logContainer">
+      <!-- Log rows rendered by JS -->
+    </div>
+  </section>
+
+</div><!-- /tabAnalysis -->
+
+<!-- ── TAB: Pipeline ─────────────────────────────────────────────────────── -->
+<div id="tabPipeline" style="display:none">
+
+  <!-- Connection indicator -->
+  <div class="pipeline-header">
+    <span class="server-dot" id="serverDot"></span>
+    <span class="server-label" id="serverLabel">Checking connection…</span>
+  </div>
+
+  <!-- Queue Briefs -->
+  <section class="card">
+    <div class="card-header">
+      <span class="card-title">Queue Briefs</span>
+    </div>
+    <div class="card-body">
+      <p class="pipeline-hint">Scan all page folders for new .txt briefs and add them to the queue.</p>
+      <button class="btn btn-accent w100" id="btnQueue">▶ Queue Briefs</button>
+      <div class="pipeline-result" id="queueResult" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- Page Management -->
+  <section class="card">
+    <div class="card-header">
+      <span class="card-title">Page Management</span>
+    </div>
+    <div class="card-body">
+
+      <div class="pipeline-group">
+        <div class="pipeline-group-label">Add New Page</div>
+        <div class="pipeline-input-row">
+          <input type="text" id="inputAddPage" class="input-text" placeholder="e.g. 11-page-New-Series" />
+          <button class="btn btn-accent" id="btnAddPage">+ Add</button>
+        </div>
+        <div class="pipeline-result" id="addPageResult" style="display:none"></div>
+      </div>
+
+      <div class="pipeline-divider"></div>
+
+      <div class="pipeline-group">
+        <div class="pipeline-group-label">Rename Page</div>
+        <input type="text" id="inputRenameOld" class="input-text pipeline-rename-input" placeholder="Current page name" />
+        <div class="pipeline-input-row">
+          <input type="text" id="inputRenameNew" class="input-text" placeholder="New page name" />
+          <button class="btn btn-accent" id="btnRenamePage">Rename</button>
+        </div>
+        <div class="pipeline-result" id="renamePageResult" style="display:none"></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Update Prompts -->
+  <section class="card">
+    <div class="card-header">
+      <span class="card-title">Update Prompts</span>
+      <button class="btn-clear" id="btnRefreshProjects">↺ Refresh</button>
+    </div>
+    <div class="card-body">
+      <p class="pipeline-hint">Select projects whose source brief has been updated, then click to refresh their prompts in the queue.</p>
+      <div id="projectList" class="project-list">
+        <div class="pipeline-empty">Click ↺ Refresh to load projects</div>
+      </div>
+      <button class="btn btn-accent w100" id="btnUpdatePrompts" disabled>Update Selected Prompts</button>
+      <div class="pipeline-result" id="updatePromptsResult" style="display:none"></div>
+    </div>
+  </section>
+
+</div><!-- /tabPipeline -->
+
+</div><!-- /body -->
+
+<!-- ── Brief Viewer Modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="briefModalOverlay" style="display:none">
+  <div class="modal brief-modal">
+    <div class="modal-header">
+      <span id="briefModalTitle" class="brief-modal-title">Brief</span>
+      <div class="brief-modal-header-actions">
+        <button class="btn btn-outline" id="briefModalCopy" style="padding:3px 10px;font-size:11px">Copy</button>
+        <button class="modal-close" id="briefModalClose">✕</button>
+      </div>
+    </div>
+    <div class="brief-modal-body">
+      <pre id="briefModalText"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ── Char Sheet Picker Modal ─────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modalOverlay" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Select Character Sheet</span>
+      <button class="modal-close" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">No "Character Sheet" file found automatically.<br/>Select one from the folder:</p>
+      <div id="modalFileList" class="modal-file-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" id="modalCancel">Cancel</button>
+      <button class="btn btn-accent" id="modalConfirm" disabled>Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script src="sidepanel.js"></script>
+</body>
+</html>
