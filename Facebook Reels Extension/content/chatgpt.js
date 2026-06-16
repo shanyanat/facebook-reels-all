@@ -250,12 +250,23 @@ function countGeneratedImages() {
     return ids.size;
 }
 
-async function pollForImages(expected, baseline, timeout = 120) {
+async function pollForImages(expected, baseline, timeout = 120, noProgressWindow = 180) {
     log(`Polling for ${expected} images (baseline=${baseline})...`);
     const start = Date.now();
+    let best = 0;
+    let lastProgressAt = Date.now();
     while (Date.now() - start < timeout * 1000) {
         const newCount = countGeneratedImages() - baseline;
+        if (newCount > best) { best = newCount; lastProgressAt = Date.now(); }
         if (newCount >= expected) { log(`✓ ${newCount} new images`); return newCount; }
+        // Early stop: ChatGPT often produces fewer images than asked. If no new image
+        // has appeared for noProgressWindow seconds, it has stopped producing — return
+        // what we have instead of waiting out the full (up to 60 min) timeout, which
+        // looks exactly like a frozen tab.
+        if (Date.now() - lastProgressAt > noProgressWindow * 1000) {
+            log(`No new image for ${noProgressWindow}s — stopping early with ${best}/${expected}`);
+            return best;
+        }
         await sleep(3000);
     }
     const final = countGeneratedImages() - baseline;
