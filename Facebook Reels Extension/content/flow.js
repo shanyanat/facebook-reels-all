@@ -531,8 +531,8 @@ async function waitForVideoReady(clipsBefore, timeout = 150) {
         // This is temporary — reload and retry rather than stopping permanently.
         if (document.body.innerText.toLowerCase().includes('unusual activity') ||
             document.body.innerText.toLowerCase().includes('กิจกรรมที่ผิดปกติ')) {
-            log('⚠ Rate limit detected (unusual activity) — will reload and retry');
-            return false;
+            log('⚠ Rate limit detected (unusual activity) — transient, will back off and retry');
+            return 'ratelimit';
         }
 
         // Error detection
@@ -703,6 +703,23 @@ async function clearSceneFails(pid, allScenes) {
     if (keys.length) await chrome.storage.local.remove(keys);
 }
 
+// Rate-limit ("unusual activity") retries — tracked PER PROJECT and kept separate
+// from scene_fails so a transient Google throttle can never drain a scene's fail
+// budget and silently drop it. Reset on any successful save, on a fresh run, and
+// at phase end.
+async function getRateLimitRetries(pid) {
+    const r = await chrome.storage.local.get(`rl_retries_${pid}`);
+    return parseInt(r[`rl_retries_${pid}`] || '0');
+}
+
+async function setRateLimitRetries(pid, count) {
+    await chrome.storage.local.set({ [`rl_retries_${pid}`]: count });
+}
+
+async function clearRateLimitRetries(pid) {
+    await chrome.storage.local.remove(`rl_retries_${pid}`);
+}
+
 async function isRetryAfterReload(pid) {
     const r = await chrome.storage.local.get(`flow_retry_${pid}`);
     return r[`flow_retry_${pid}`] === '1';
@@ -772,6 +789,7 @@ async function runVideos(project) {
         await waitForCompose();
         await sleep(500);
     } else {
+        await clearRateLimitRetries(pid);   // fresh user-initiated run — clean throttle budget
         await clickNewProject();
         await waitForCompose();
         log('⏳ Waiting 20s — please configure model, ratio, quantity and dismiss any panels...');
@@ -782,6 +800,11 @@ async function runVideos(project) {
     log(`${doneCount}/${project.total_scenes} already done — processing ${scenes.length} remaining`);
 
     const SCENE_MAX_FAILS = 5;
+    // Rate-limit retries do NOT count toward SCENE_MAX_FAILS — a transient throttle
+    // must never drop a scene. Back off and retry the SAME scene; only stop (honestly,
+    // never a false "complete") if the throttle persists past the cap.
+    const RATE_LIMIT_MAX_RETRIES = 5;
+    const RATE_LIMIT_BACKOFF_MS  = 60000;   // 60s between throttle retries
     let anySceneSkipped = false;
 
     for (let i = 0; i < scenes.length; i++) {
@@ -800,8 +823,9 @@ async function runVideos(project) {
 
         let success = false;
         let reloadReason = '';
+        let rateLimited = false;   // transient throttle — handled separately, no fail penalty
 
-        for (let attempt = 1; attempt <= 2 && !success && !reloadReason; attempt++) {
+        for (let attempt = 1; attempt <= 2 && !success && !reloadReason && !rateLimited; attempt++) {
             if (attempt > 1) {
                 log(`Scene ${nn}: retry ${attempt}/2`);
                 await jitter(2500, 2500);
@@ -822,7 +846,12 @@ async function runVideos(project) {
                 const clipsBefore = countVideoClips();
                 await clickGenerate();
 
-                const ready = await waitForVideoReady(clipsBefore, 150);
+                const ready = await waitForVideoReady(clipsBefore, 210);
+                if (ready === 'ratelimit') {
+                    // Transient Google throttle — handled below WITHOUT a fail penalty.
+                    rateLimited = true;
+                    break;
+                }
                 if (!ready) {
                     reloadReason = `Scene ${nn}: generation failed/timed out`;
                     break;
@@ -856,12 +885,31 @@ async function runVideos(project) {
                 doneCount++;
                 log(`✓ Scene ${nn} complete — ${doneCount}/${project.total_scenes} videos done`);
                 success = true;
+                await clearRateLimitRetries(pid);   // a save proves we're not throttled — reset budget
 
                 if (i < scenes.length - 1) await jitter(4000, 5000); // 4–9s between scenes
 
             } catch (e) {
                 log(`ERROR scene ${nn} attempt ${attempt}: ${e.message}`);
             }
+        }
+
+        // Rate limit takes priority over the failure path: never penalise a scene for
+        // a transient throttle. Back off, then retry the SAME scene after a reload.
+        // Only stop — honestly, never a false "complete" — if it persists past the cap.
+        if (rateLimited) {
+            const rl = (await getRateLimitRetries(pid)) + 1;
+            if (rl > RATE_LIMIT_MAX_RETRIES) {
+                await clearRateLimitRetries(pid);
+                log(`Rate limited ${rl - 1}× in a row — stopping for now. No scenes dropped; re-run later to finish.`);
+                chrome.runtime.sendMessage({ action: 'videosRateLimited', projectId: pid });
+                return;
+            }
+            await setRateLimitRetries(pid, rl);
+            log(`⚠ Rate limited — backing off ${Math.round(RATE_LIMIT_BACKOFF_MS / 1000)}s then retrying scene ${nn} (try ${rl}/${RATE_LIMIT_MAX_RETRIES}, no penalty)`);
+            await sleep(RATE_LIMIT_BACKOFF_MS);
+            await reloadForRetry(pid, `Scene ${nn}: rate-limit back-off retry`);
+            return;
         }
 
         if (!success) {
@@ -879,6 +927,7 @@ async function runVideos(project) {
     }
 
     await clearSceneFails(pid, project.scenes);
+    await clearRateLimitRetries(pid);
     log(`=== VIDEO PHASE COMPLETE: ${pid} — ${doneCount}/${project.total_scenes} videos done ===`);
     const completionAction = anySceneSkipped ? 'videosPartialComplete' : 'videosComplete';
     chrome.runtime.sendMessage({ action: completionAction, projectId: pid });

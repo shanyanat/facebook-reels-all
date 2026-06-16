@@ -645,6 +645,28 @@ async function handleMessage(msg, sender) {
         return;
     }
 
+    if (msg.action === 'videosRateLimited') {
+        // Google throttled us ("unusual activity"). flow.js already backed off and
+        // gave up for now WITHOUT dropping or penalising any scene — the project is
+        // left at its real progress. Show an honest status; re-running later resumes.
+        const state = await loadState();
+        const slot = state.slots.find(s => s.tabId === tabId);
+        if (!slot) return;
+
+        try { await chrome.tabs.remove(tabId); } catch {}
+        Object.assign(slot, freshSlot(slot.idx));
+        slot.status = 'done';
+        slot.progress = '⚠ Rate limited — re-run later to finish';
+        await saveState(state);
+
+        if (state.running) {
+            slot.status = 'idle';
+            slot.progress = '';
+            await fillIdleSlots(state);
+        }
+        return;
+    }
+
     if (msg.action === 'error') {
         const state = await loadState();
         const slot = state.slots.find(s => s.tabId === tabId);
