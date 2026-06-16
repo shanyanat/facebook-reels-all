@@ -180,6 +180,70 @@ async function configureVideoSettings(aspectRatio = '9:16') {
     log('Settings configured ✓');
 }
 
+// ── Agent / "Omni" onboarding panel (some accounts only) ──────────────────────
+// On certain Google accounts (e.g. ULTRA) Flow opens an "Omni" assistant side panel
+// by default and the compose bar starts WITHOUT "Agent" mode — both must be handled
+// or the bot can never reach the generate step. Other accounts never show this, so
+// everything here is gated on the panel actually being present (a true no-op there).
+
+function agentPanelIsOpen() {
+    const body = document.body.innerText || '';
+    return body.includes('Omni') || body.toLowerCase().includes('keyboard shortcuts');
+}
+
+function findAgentPanelCloseButton() {
+    // The assistant panel sits on the right; its ✕ is a Material "close" icon button
+    // in the top-right. Scope to that region so we never hit an unrelated close button.
+    const w = window.innerWidth, h = window.innerHeight;
+    for (const b of document.querySelectorAll('button, [role="button"]')) {
+        if (!isVisible(b)) continue;
+        const r = b.getBoundingClientRect();
+        if (!(r.left > w * 0.6 && r.top < h * 0.25)) continue;
+        const txt  = (b.textContent || '').trim().toLowerCase();
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (txt === 'close' || txt === '✕' || txt === '×' ||
+            aria.includes('close') || aria.includes('ปิด') || aria.includes('dismiss')) {
+            return b;
+        }
+    }
+    return null;
+}
+
+async function dismissAgentPanel() {
+    // No-op unless the Omni panel is actually showing (primary/backup accounts).
+    if (!agentPanelIsOpen()) return;
+    log('Agent/Omni side panel detected — closing it and enabling Agent mode');
+
+    // Step 1: close the panel — try the ✕ button, fall back to Escape.
+    for (let attempt = 0; attempt < 4 && agentPanelIsOpen(); attempt++) {
+        const x = findAgentPanelCloseButton();
+        if (x) { x.click(); }
+        else { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }
+        await sleep(800);
+    }
+
+    if (agentPanelIsOpen()) {
+        log('WARNING: could not close Agent/Omni panel automatically — visible buttons follow:');
+        for (const b of document.querySelectorAll('button, [role="button"]')) {
+            if (!isVisible(b)) continue;
+            const r = b.getBoundingClientRect();
+            log(`  btn "${(b.textContent || '').trim().slice(0, 24)}" aria="${b.getAttribute('aria-label') || ''}" @${Math.round(r.left)},${Math.round(r.top)}`);
+        }
+        return;
+    }
+    log('Agent/Omni panel closed');
+
+    // Step 2: click the "Agent" pill (exact text). Only reached after a panel was
+    // closed, so it can never toggle Agent mode off on accounts that look right already.
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const agentBtn = [...document.querySelectorAll('button, [role="button"]')]
+            .find(el => (el.textContent || '').trim() === 'Agent' && isVisible(el));
+        if (agentBtn) { agentBtn.click(); log('Clicked "Agent"'); await sleep(800); return; }
+        await sleep(800);
+    }
+    log('NOTE: "Agent" button not found after closing panel — may already be active');
+}
+
 async function clickStartFrameSlot() {
     // Exact-text match — same logic as original bot.py _try_first_frame_upload
     const keywords = ['เริ่ม', 'Start', 'เริ่มต้น'];
@@ -796,6 +860,10 @@ async function runVideos(project) {
         await sleep(20000);
         await sleep(500);
     }
+
+    // Close the "Omni" panel and enable Agent mode if this account shows them.
+    // No-op on accounts that don't (primary/backup) — runs in both paths above.
+    await dismissAgentPanel();
 
     log(`${doneCount}/${project.total_scenes} already done — processing ${scenes.length} remaining`);
 
