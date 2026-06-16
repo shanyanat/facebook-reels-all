@@ -135,6 +135,9 @@ async function _fillIdleSlotsInner(state) {
 
         const tabUrl = videosOnly ? 'https://labs.google/fx/th/tools/flow' : 'https://chatgpt.com/';
         const tab = await chrome.tabs.create({ url: tabUrl, active: false });
+        // Stop Chrome's Memory Saver from freezing/discarding this background tab —
+        // a discarded tab's automation loop stalls (only the visible tab keeps running).
+        chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
         slot.tabId = tab.id;
         await saveState(state);
     }
@@ -569,6 +572,8 @@ async function handleMessage(msg, sender) {
             url: 'https://labs.google/fx/th/tools/flow',
             active: false
         });
+        // Keep this background tab from being frozen/discarded by Memory Saver.
+        chrome.tabs.update(newTab.id, { autoDiscardable: false }).catch(() => {});
         try { await chrome.tabs.remove(tabId); } catch {}
         slot.tabId = newTab.id;
         await saveState(state);
