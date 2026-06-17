@@ -133,16 +133,24 @@ a **continuation loop** after the first Phase B download:
 1. `getDiskMissingScenes(pid)` asks monitor.py's `/contents.json` which scenes have no
    `img_on_disk` yet (falls back to `image_status` for an old monitor; `[]` on error so
    a transient failure never loops or re-requests present scenes).
-2. While scenes are missing (up to `MAX_RETRY_ROUNDS = 4`), it re-asks **in the same chat**
-   for ONLY the missing scenes' prompts, in ascending order, then maps each new image to
-   its **actual missing scene number** and saves it as `reel_XXXX-scene-NN.png` — the exact
-   filename/format monitor.py's `SCENE_IMG_RE` expects. After each round it re-checks disk
-   truth, and breaks early if a whole round produced nothing (ChatGPT stuck).
+2. While scenes are missing, it re-asks **in the same chat** for **exactly ONE scene per
+   message** and saves the returned image as that scene's `reel_XXXX-scene-NN.png` (the
+   exact filename/format monitor.py's `SCENE_IMG_RE` expects). One-at-a-time is deliberate:
+   it makes the image→scene mapping **certain by construction**. A multi-image batch mapped
+   by position is NOT safe — ChatGPT can skip/reorder within a batch, and `img_on_disk` only
+   proves a file exists, not that it holds the right scene (e.g. asking for 7,8,9,10 and
+   getting 7,8,10 would save scene 10's image as `scene-09.png`). Each scene gets up to
+   `MAX_ATTEMPTS_PER_SCENE = 3` tries; a scene that exhausts them is skipped so the loop
+   always terminates.
 
-`imagesComplete` still fires at the end even if a few scenes never came (after 4 rounds),
-so the pipeline never hangs — but it now tries hard to reach all N first. Do **not** lower
-the `noProgressWindow` instead; that early-stop is the freeze fix (see the 1-hour-frozen-tab
+`imagesComplete` still fires at the end even if a few scenes never came, so the pipeline
+never hangs — but it now tries hard to reach all N first. Do **not** lower the
+`noProgressWindow` instead; that early-stop is the freeze fix (see the 1-hour-frozen-tab
 row below) — the continuation loop is what recovers the missing images.
+
+> The **first** Phase B pass still maps its batch by position (`newUrlsB[i]`→scene `i+1`),
+> which is safe only for the typical in-order truncated prefix. The certain path is the
+> one-at-a-time retry above; hardening the first pass the same way is a possible later step.
 
 ### Sidebar count reflects disk, not flags (2026-06-17)
 
@@ -157,7 +165,7 @@ an old monitor. Used in both the project list and the status/delete table.
 
 | Bug | Symptom | Root cause | Fix |
 |-----|---------|-----------|-----|
-| Reel ends with fewer than 10 images | ChatGPT delivered e.g. 6/10, the run "completed" and the video phase made a short reel | ChatGPT caps images per reply; Phase B's `pollForImages` early-stop accepted the partial set and sent `imagesComplete` | Phase B continuation loop: re-ask in-chat for only the disk-missing scenes (≤4 rounds), map each to its correct `scene-NN.png`, verify against disk |
+| Reel ends with fewer than 10 images | ChatGPT delivered e.g. 6/10, the run "completed" and the video phase made a short reel | ChatGPT caps images per reply; Phase B's `pollForImages` early-stop accepted the partial set and sent `imagesComplete` | Phase B continuation loop: re-ask in-chat for each disk-missing scene **one at a time** (≤3 tries each) so each image maps certainly to its `scene-NN.png`, re-verifying against disk |
 | Sidebar count stale after deleting files | Deleted a reel's images/videos but the `X/Y` count didn't drop | Count read `image_status`/`video_status` flags, which a file delete doesn't clear | `countDone()` counts from disk truth `img_on_disk`/`vdo_on_disk` (flag fallback for old monitor) |
 | Two character sheets attached | Both uploads sent the same file | `pendingFile` shared state contamination | Pass base64 as executeScript arg — no shared state |
 | `res.result = undefined` | Slot log showed `Injected: undefined` | General handleMessage listener stole `sendResponse` before executeScript completed | Added `injectFileUpload` to exclusion guard |

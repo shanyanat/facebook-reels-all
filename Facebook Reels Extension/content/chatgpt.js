@@ -498,61 +498,60 @@ async function runImages(project, resumeFrom) {
     // ── Phase B continuation: re-request scenes ChatGPT under-delivered ────────
     // ChatGPT rarely returns all N images in one reply, so the poll above often
     // stops early with fewer than total_scenes. Instead of moving to video with a
-    // short reel, re-ask — in the SAME chat (context preserved) — for ONLY the
-    // scenes still missing on disk, and map each new image to its CORRECT scene
-    // number so files are always saved as reel_XXXX-scene-NN.png (exact format
-    // monitor.py expects). After each round we re-check disk truth, so a reel only
-    // proceeds once every scene image is confirmed on disk (or we run out of rounds).
-    const MAX_RETRY_ROUNDS = 4;
+    // short reel, re-ask — in the SAME chat (context preserved) — for the scenes
+    // still missing on disk. We request exactly ONE scene per message: that makes
+    // the image→scene mapping certain by construction (the image returned for a
+    // single-scene request IS that scene), so it always saves as the correct
+    // reel_XXXX-scene-NN.png regardless of order or skips. A multi-image batch
+    // mapped by position is NOT safe — ChatGPT can skip/reorder within a batch and
+    // img_on_disk only proves a file exists, not that it holds the right scene.
+    const MAX_ATTEMPTS_PER_SCENE = 3;
+    const attempts = {};
     let missing = await getDiskMissingScenes(pid);
-    for (let round = 1; round <= MAX_RETRY_ROUNDS && missing.length > 0; round++) {
+    while (missing.length > 0) {
         if (await isStopped(pid)) { log('Stopped during Phase B retry'); return; }
-        log(`Phase B retry ${round}/${MAX_RETRY_ROUNDS}: ${missing.length} missing → scenes ${missing.join(', ')}`);
-        report(`Phase B: re-requesting ${missing.length} missing image(s) (round ${round})...`);
+        // Next still-missing scene that has retries left; if none, give up the rest.
+        const n = missing.find(s => (attempts[s] || 0) < MAX_ATTEMPTS_PER_SCENE);
+        if (n === undefined) {
+            log(`Phase B: ${missing.length} scene(s) exhausted retries: ${missing.join(', ')}`);
+            break;
+        }
+        attempts[n] = (attempts[n] || 0) + 1;
+        const nn = String(n).padStart(2, '0');
+        log(`Phase B retry: scene ${nn} (attempt ${attempts[n]}/${MAX_ATTEMPTS_PER_SCENE}); ${missing.length} missing`);
+        report(`Phase B: re-requesting scene ${nn} (${missing.length} still missing)...`);
 
         await activateImageMode();
         await selectAspectRatio(ratio);
         await selectThinkingMode('standard');
 
-        const missingBlocks = missing.map(n => {
-            const s = project.scenes.find(x => x.scene_num === n);
-            const body = s ? cutAtEndMarker((s.image_prompt || '').trim(), 'IMAGE') : '';
-            return `## SCENE ${n} IMAGE PROMPT\n\n${body}`;
-        }).join('\n\n---\n\n');
+        const s = project.scenes.find(x => x.scene_num === n);
+        const body = s ? cutAtEndMarker((s.image_prompt || '').trim(), 'IMAGE') : '';
         await fillChatInput(
-            `ยังขาดภาพอยู่ ${missing.length} ภาพ — สร้างเฉพาะซีนต่อไปนี้ ซีนละ 1 ภาพ ตามลำดับ\n` +
-            `(Generate ONLY these ${missing.length} missing scene(s), one image per scene, in this exact order):\n\n` +
-            missingBlocks + '\n\n--- The End of IMAGE PROMPTS ---'
+            `สร้างภาพสำหรับซีนนี้ 1 ภาพ (Generate exactly ONE image for this single scene):\n\n` +
+            `## SCENE ${n} IMAGE PROMPT\n\n${body}\n\n--- The End of IMAGE PROMPTS ---`
         );
 
         const baselineR = countGeneratedImages();
         await clickSend();
         await sleep(5000);
-        await waitForGeneration(600 + missing.length * 360);
+        await waitForGeneration(600);
         window.scrollTo(0, document.body.scrollHeight);
-        await sleep(3000);
-        await pollForImages(missing.length, baselineR, 3600);
+        await sleep(2000);
+        await pollForImages(1, baselineR, 600);
 
-        // Map this round's NEW images to the missing scene numbers, in order.
-        const newUrlsR = getGeneratedImageUrls().slice(baselineR);
-        log(`Phase B retry ${round}: ${newUrlsR.length} new image(s) received`);
-        for (let k = 0; k < Math.min(newUrlsR.length, missing.length); k++) {
-            const nn = String(missing[k]).padStart(2, '0');
-            report(`Phase B retry: downloading scene ${nn}...`);
+        // Exactly one scene was requested, so the newest new image IS scene n.
+        const got = getGeneratedImageUrls().slice(baselineR);
+        if (got.length) {
             try {
-                await downloadImageViaBg(newUrlsR[k], `${pid}-scene-${nn}.png`);
-                log(`✓ scene-${nn}.png (retry ${round})`);
+                await downloadImageViaBg(got[got.length - 1], `${pid}-scene-${nn}.png`);
+                log(`✓ scene-${nn}.png (retry attempt ${attempts[n]})`);
             } catch (e) { log(`ERROR downloading scene ${nn} (retry): ${e.message}`); }
+        } else {
+            log(`Phase B retry: scene ${nn} produced no image (attempt ${attempts[n]})`);
         }
 
-        // Re-check disk; stop early if a whole round produced nothing (ChatGPT stuck).
-        const stillMissing = await getDiskMissingScenes(pid);
-        if (newUrlsR.length === 0 && stillMissing.length === missing.length) {
-            log(`Phase B retry ${round}: no progress — stopping with ${stillMissing.length} still missing`);
-            missing = stillMissing;
-            break;
-        }
-        missing = stillMissing;
+        missing = await getDiskMissingScenes(pid);
     }
     if (missing.length > 0) {
         log(`WARNING: Phase B finished with ${missing.length} scene(s) still missing: ${missing.join(', ')}`);
