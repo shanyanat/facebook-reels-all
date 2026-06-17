@@ -107,6 +107,21 @@ Some Google accounts (e.g. an **ULTRA** account) open Flow with a right-side **"
 
 When the panel is present it: (1) closes it via the top-right ✕ (`findAgentPanelCloseButton()` — a visible button in the top-right region with close/✕/×/ปิด/dismiss text or aria), falling back to an Escape keydown; then (2) clicks the exact-text `Agent` button. The Agent click only fires **after** a panel was closed, so it can never toggle Agent mode *off* on an already-correct account. If the ✕ can't be found it logs a dump of visible buttons (text + aria + position) to the side panel so `findAgentPanelCloseButton()` can be refined from a live test.
 
+### Desktop notification when a reel finishes (2026-06-17)
+
+`background.js` shows a Chrome desktop notification when a reel is **fully** done.
+`notifyReelFinished()` is called from the `videosComplete` handler **only when the
+disk backstop confirms every scene has a video** (`allOnDisk === true`) — so a partial
+finish, a rate-limit stop, or a "needs images" result never fires it. This lets the
+user leave slots running in background tabs and be told the moment one truly completes.
+
+Requirements/details:
+- `manifest.json` must keep the **`"notifications"`** permission.
+- The notification icon is `icons/icon128.png` (via `chrome.runtime.getURL`).
+- The call is best-effort, wrapped in try/catch — a notification failure can never
+  break the pipeline. Only the "reel finished" event notifies (by design); other
+  outcomes still show their status in the side panel but do not pop a notification.
+
 ## Bugs Fixed (history)
 
 | Bug | Symptom | Root cause | Fix |

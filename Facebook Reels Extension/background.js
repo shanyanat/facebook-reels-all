@@ -7,6 +7,27 @@ const API = 'http://localhost:7788';
 const STORAGE_KEY = 'reel_gen_state';
 const MAX_SLOT_COUNT = 5;
 
+// ── Desktop notification when a reel finishes ──────────────────────────────────
+// Fires only when every scene video is confirmed on disk (a truly finished reel),
+// so the user can leave the slots running in background tabs and be told when one
+// is done. Best-effort: wrapped so a notification failure can never break the
+// pipeline. Requires the "notifications" permission in manifest.json.
+function notifyReelFinished(projectId, page, sceneCount) {
+    try {
+        const where = page ? ` (${page})` : '';
+        const count = sceneCount ? `all ${sceneCount} scene videos` : 'all scene videos';
+        chrome.notifications.create('reel-done-' + projectId + '-' + Date.now(), {
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+            title: '✓ Reel finished',
+            message: `${projectId}${where} — ${count} done.`,
+            priority: 2
+        }, () => { void chrome.runtime.lastError; /* ignore — fire and forget */ });
+    } catch (e) {
+        console.warn('[bg] notifyReelFinished failed:', e);
+    }
+}
+
 // ── State helpers ─────────────────────────────────────────────────────────────
 
 function freshSlot(idx) {
@@ -588,13 +609,17 @@ async function handleMessage(msg, sender) {
         // Backstop: confirm on disk that every scene actually has a video before
         // showing a green "Complete". If any are missing, show an honest warning
         // rather than hiding a failed generation behind a checkmark.
-        let allOnDisk = true, missing = 0;
+        let allOnDisk = true, missing = 0, projPage = '', sceneCount = 0;
         try {
             const projects = await fetchContents();
             const proj = projects.find(p => p.id === (msg.projectId || slot.projectId));
-            if (proj && proj.scenes.some(s => s.vdo_on_disk !== undefined)) {
-                missing = proj.scenes.filter(s => !s.vdo_on_disk).length;
-                allOnDisk = missing === 0;
+            if (proj) {
+                projPage = proj.page || '';
+                sceneCount = (proj.scenes && proj.scenes.length) || 0;
+                if (proj.scenes.some(s => s.vdo_on_disk !== undefined)) {
+                    missing = proj.scenes.filter(s => !s.vdo_on_disk).length;
+                    allOnDisk = missing === 0;
+                }
             }
         } catch {}
 
@@ -603,6 +628,11 @@ async function handleMessage(msg, sender) {
         slot.status = 'done';
         slot.progress = allOnDisk ? '✓ Complete' : `⚠ ${missing} video(s) still missing`;
         await saveState(state);
+
+        // Only a truly finished reel (every scene video on disk) fires the notification.
+        if (allOnDisk) {
+            notifyReelFinished(msg.projectId || slot.projectId, projPage, sceneCount);
+        }
 
         if (state.running) {
             slot.status = 'idle';

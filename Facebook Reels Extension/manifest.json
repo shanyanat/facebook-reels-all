@@ -3,7 +3,7 @@
   "name": "Reels Parallel Generator",
   "version": "1.0",
   "description": "Parallel image and video generation for Facebook Reels",
-  "permissions": ["tabs", "downloads", "scripting", "storage", "alarms", "sidePanel"],
+  "permissions": ["tabs", "downloads", "scripting", "storage", "alarms", "sidePanel", "notifications"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://labs.google/*",
