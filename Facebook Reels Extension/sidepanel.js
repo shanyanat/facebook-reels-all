@@ -9,6 +9,19 @@ const SELECTABLE = new Set([
 
 const ARCHIVABLE = new Set(['videos_done', 'videos_in_progress']);
 
+// Count how many scenes are done from DISK TRUTH (img_on_disk / vdo_on_disk, served
+// by monitor.py), falling back to contents.json flags only for an old monitor that
+// doesn't send those fields. This makes the X/Y count drop correctly when the user
+// deletes files from working/ or the reel folder — the image_status/video_status
+// flags are NOT cleared by a delete, so counting them left the number stale.
+function countDone(scenes, kind) {
+    const arr = scenes || [];
+    const diskKey = kind === 'img' ? 'img_on_disk' : 'vdo_on_disk';
+    const flagKey = kind === 'img' ? 'image_status' : 'video_status';
+    const hasDisk = arr.some(s => s[diskKey] !== undefined);
+    return arr.filter(s => hasDisk ? !!s[diskKey] : s[flagKey] === 'done').length;
+}
+
 let _toastTimer;
 function showToast(msg, type = '') {
     const el = document.getElementById('toast');
@@ -169,8 +182,8 @@ async function renderQueue(state) {
         const pillText  = status.replace(/_/g, ' ');
 
         const total      = p.total_scenes || 0;
-        const imgDone    = (p.scenes || []).filter(s => s.image_status === 'done').length;
-        const vidDone    = (p.scenes || []).filter(s => s.video_status === 'done').length;
+        const imgDone    = countDone(p.scenes, 'img');
+        const vidDone    = countDone(p.scenes, 'vid');
         const inVideoPhase = ['images_done','videos_in_progress','videos_partial','videos_done','complete'].includes(status);
         const countHtml  = total > 0
             ? `<span class="proj-count">${inVideoPhase ? vidDone : imgDone}/${total}</span>`
@@ -356,8 +369,8 @@ document.getElementById('status-btn').onclick = async () => {
             tbody.innerHTML = projects.map(p => {
                 const st = p.disk_status || p.project_status || 'pending';
                 const total = p.total_scenes || 0;
-                const imgDone = (p.scenes || []).filter(s => s.image_status === 'done').length;
-                const vidDone = (p.scenes || []).filter(s => s.video_status === 'done').length;
+                const imgDone = countDone(p.scenes, 'img');
+                const vidDone = countDone(p.scenes, 'vid');
                 const chk = selectedForDelete.has(p.id) ? ' checked' : '';
                 return `<tr>
                   <td style="text-align:center;padding-left:10px">

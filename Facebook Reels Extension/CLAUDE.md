@@ -122,10 +122,43 @@ Requirements/details:
   break the pipeline. Only the "reel finished" event notifies (by design); other
   outcomes still show their status in the side panel but do not pop a notification.
 
+### Phase B continuation: get all N images, not whatever ChatGPT delivered (2026-06-17)
+
+ChatGPT almost never returns all `total_scenes` images in a single reply, so the
+`pollForImages(total_scenes, …)` in Phase B usually stops early (its 180s
+`noProgressWindow`) with fewer images, the run sent `imagesComplete`, and the slot
+moved to the video phase with a short reel (e.g. 6/10). `content/chatgpt.js` now adds
+a **continuation loop** after the first Phase B download:
+
+1. `getDiskMissingScenes(pid)` asks monitor.py's `/contents.json` which scenes have no
+   `img_on_disk` yet (falls back to `image_status` for an old monitor; `[]` on error so
+   a transient failure never loops or re-requests present scenes).
+2. While scenes are missing (up to `MAX_RETRY_ROUNDS = 4`), it re-asks **in the same chat**
+   for ONLY the missing scenes' prompts, in ascending order, then maps each new image to
+   its **actual missing scene number** and saves it as `reel_XXXX-scene-NN.png` — the exact
+   filename/format monitor.py's `SCENE_IMG_RE` expects. After each round it re-checks disk
+   truth, and breaks early if a whole round produced nothing (ChatGPT stuck).
+
+`imagesComplete` still fires at the end even if a few scenes never came (after 4 rounds),
+so the pipeline never hangs — but it now tries hard to reach all N first. Do **not** lower
+the `noProgressWindow` instead; that early-stop is the freeze fix (see the 1-hour-frozen-tab
+row below) — the continuation loop is what recovers the missing images.
+
+### Sidebar count reflects disk, not flags (2026-06-17)
+
+`sidepanel.js` showed the `X/Y` count from contents.json's `image_status` / `video_status`
+flags, which a manual file delete does **not** clear — so after deleting a reel's images/
+videos the count stayed stale even though the status label (which uses `disk_status`)
+updated. New `countDone(scenes, kind)` helper counts from **disk truth**
+(`img_on_disk` / `vdo_on_disk`, served by monitor.py), falling back to the flags only for
+an old monitor. Used in both the project list and the status/delete table.
+
 ## Bugs Fixed (history)
 
 | Bug | Symptom | Root cause | Fix |
 |-----|---------|-----------|-----|
+| Reel ends with fewer than 10 images | ChatGPT delivered e.g. 6/10, the run "completed" and the video phase made a short reel | ChatGPT caps images per reply; Phase B's `pollForImages` early-stop accepted the partial set and sent `imagesComplete` | Phase B continuation loop: re-ask in-chat for only the disk-missing scenes (≤4 rounds), map each to its correct `scene-NN.png`, verify against disk |
+| Sidebar count stale after deleting files | Deleted a reel's images/videos but the `X/Y` count didn't drop | Count read `image_status`/`video_status` flags, which a file delete doesn't clear | `countDone()` counts from disk truth `img_on_disk`/`vdo_on_disk` (flag fallback for old monitor) |
 | Two character sheets attached | Both uploads sent the same file | `pendingFile` shared state contamination | Pass base64 as executeScript arg — no shared state |
 | `res.result = undefined` | Slot log showed `Injected: undefined` | General handleMessage listener stole `sendResponse` before executeScript completed | Added `injectFileUpload` to exclusion guard |
 | `Failed to fetch` (CSP) | No files attached at all | MAIN world fetch blocked by ChatGPT's `connect-src` CSP | Moved fetch to background service worker |
