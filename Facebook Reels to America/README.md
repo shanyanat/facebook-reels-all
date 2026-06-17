@@ -1,144 +1,153 @@
 # Facebook Reels to America — Automation Pipeline
 
-Automates the full content creation pipeline: analysis `.txt` file → ChatGPT storyboard + scene images → Google Flow scene videos.
+Turns a `.txt` brief (ChatGPT/Gemini analysis output) into a finished set of AI Reels
+files: brief → ChatGPT storyboard + scene images + thumbnail → Google Flow scene
+videos → archived for CapCut.
+
+`data/contents.json` is the single source of truth for all project state.
+
+> **Full details live in `CLAUDE.md`** (this folder) and in the Chrome extension's
+> own `CLAUDE.md` (the sibling `Facebook Reels Extension/` folder). This README is the
+> quick-start; CLAUDE.md is authoritative if the two ever disagree.
 
 ---
 
-## How It Works
+## How it works
 
 ```
-You (manual)              System (automated)
-─────────────             ──────────────────
-Find viral video
-Analyze with Master
-Prompt in ChatGPT/
-Gemini
-Save output as .txt  →  monitor.py parses .txt → adds project to queue
-Drop .txt into            Extension reads queue → automates ChatGPT images
-data/analysis/            Extension reads queue → automates Google Flow videos
-                          monitor.py organizes files → updates status
-                          Videos land in output/[project_id]/
+You (manual)                 System (automated)
+─────────────                ──────────────────
+Find a viral video
+Analyze it with the
+Master Prompt in
+ChatGPT / Gemini
+Save output as a .txt    →   py bot.py queue  (or monitor.py auto-queues)
+Drop .txt into                 → parses prompts, FROZEN into data/contents.json
+pages/<page>/briefs/         py bot.py images  → ChatGPT: storyboard + scenes + thumbnail
+                             py bot.py videos  → Google Flow: one MP4 per scene
+                             py bot.py archive → moves deliverables to ready/<reel>/
+                             py bot.py collect → ready/ → complete/<page>/  (for CapCut)
 ```
+
+There are **two ways** to drive the image/video steps — use one or the other, never both
+on the same project at once:
+
+- **Terminal (Playwright):** `py bot.py images` / `py bot.py videos`. Uses a saved Chrome
+  profile at `C:/temp/chrome-bot`.
+- **Chrome extension:** load the sibling **`Facebook Reels Extension/`** folder as an
+  unpacked extension; its side panel drives ChatGPT/Flow and saves files via `monitor.py`.
 
 ---
 
 ## Setup
 
-### 1. Install Python dependencies
+### 1. Install dependencies (once per machine)
 ```
 pip install -r requirements.txt
+playwright install chromium
 ```
 
-### 2. Load the Chrome Extension
+### 2. (Extension path only) Load the Chrome extension
 1. Open Chrome → `chrome://extensions`
-2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked** → select the `extension/` folder
+2. Enable **Developer mode** (top-right)
+3. Click **Load unpacked** → select the sibling **`Facebook Reels Extension/`** folder
+   (NOT this project folder — this project has no `extension/` of its own)
 
-### 3. Start the monitor
-Open a terminal in the project folder and run:
+### 3. Start the monitor (required for the extension; optional for terminal)
 ```
-python monitor.py
+py monitor.py
 ```
-Leave this running the whole session. It:
-- Watches `data/analysis/` for new `.txt` files
+Leave it running the whole session. It:
+- Watches every `pages/<page>/briefs/` for new `.txt` files (auto-queues them)
 - Watches your Downloads folder for generated files
-- Serves `contents.json` to the extension on `http://localhost:7788`
+- Serves `contents.json` and files to the extension on `http://localhost:7788`
+
+Restart `monitor.py` after adding a new page folder so it watches the new `briefs/`.
 
 ---
 
-## Usage
+## Commands
 
-### Step 1 — Analyze a viral video (manual)
-1. Open ChatGPT or Gemini
-2. Attach the viral video + your Character Sheet (if any)
-3. Paste the **Master Prompt** (fill in the 4 fields at the top)
-4. Get the full analysis output (4 sections)
-5. Copy the entire output → save as a `.txt` file
-
-### Step 2 — Queue the project
-Drop the `.txt` file into `data/analysis/`.
-
-`monitor.py` will:
-- Detect the file
-- Parse it into `data/contents.json`
-- Move the file to `data/analysis/processed/`
-
-### Step 3 — Generate images (ChatGPT)
-1. Log into `chatgpt.com` in Chrome
-2. Click the extension icon → confirm the project appears with status `pending`
-3. (Optional) Upload a Character Sheet: click **Change** next to "Character Sheet"
-4. Select the project → click **▶ Start Images (ChatGPT)**
-
-The bot will:
-- Open ChatGPT in a new tab
-- Set up image mode (9:16, Thinking Extended)
-- Generate the storyboard → auto-download → rename to `reel_NNNN-storyboard.png`
-- Generate all scene images → auto-download → rename to `reel_NNNN-scene-01.png` … `scene-10.png`
-- `monitor.py` moves files to `pending/` and updates status → `images_done`
-
-### Step 4 — Generate videos (Google Flow)
-1. Log into `flow.google.com` in Chrome
-2. Click the extension icon → project should show status `images_done`
-3. Click **▶ Start Videos (Flow)**
-
-The bot will loop through all scenes:
-- Open a new Flow project
-- Upload the scene image
-- Set video settings (9:16, Veo 3.1 Lite, Lower Priority)
-- Paste the VIDEO PROMPT → Generate
-- Wait for completion → auto-download → rename to `reel_NNNN-vdo-01.mp4`
-- `monitor.py` moves to `output/reel_NNNN/` and updates status
-- 60-second pause between scenes
-
-### Step 5 — Edit in CapCut
-All scene videos are in `output/reel_NNNN/`. Import them into CapCut for final assembly.
-
----
-
-## File Structure
-
+All commands run from this project root:
 ```
-data/analysis/          ← DROP .txt files here
-data/analysis/processed/  ← processed .txt files move here
-data/contents.json      ← project queue (auto-managed)
-input/character_sheets/ ← place character sheet images here
-pending/                ← downloaded images staging area
-pending/processed/      ← source files after successful processing
-output/reel_NNNN/       ← final scene .mp4 videos
-extension/              ← Chrome extension source
+py bot.py addpage <page-name>     # create pages/<page>/{briefs,ready}/
+py bot.py queue                   # scan briefs/ and register new .txt files
+py bot.py status                  # show all projects + status (disk-driven)
+py bot.py images reel_XXXX        # ChatGPT: storyboard + scene images + thumbnail
+py bot.py videos reel_XXXX        # Google Flow: scene videos
+py bot.py archive reel_XXXX       # move finished files to ready/<reel>/
+py bot.py collect                 # ready/*/ → complete/<page>/  (run after archiving)
+py bot.py updateprompts reel_XXXX # re-read the .txt and refresh prompts in contents.json
+py bot.py reconcile               # DRY-RUN: list scene flags that don't match disk
+py bot.py reconcile apply         # apply the fixes (run only while monitor.py is idle)
 ```
 
-## File Naming
-
-| File | Description |
-|------|-------------|
-| `reel_0001-storyboard.png` | Storyboard grid image |
-| `reel_0001-scene-01.png` … | Individual scene images |
-| `reel_0001-vdo-01.mp4` … | Final scene videos ready for CapCut |
+Prompts are **frozen at queue time** — editing the `.txt` afterwards has no effect.
+Run `updateprompts` to sync changes.
 
 ---
 
-## Project Status Values
+## File structure
+
+```
+pages/<page>/briefs/        ← DROP .txt briefs here (+ character sheet image)
+pages/<page>/working/       ← in-progress images/videos (auto-managed)
+pages/<page>/ready/<reel>/  ← archived deliverables for a finished reel
+complete/<page>/<reel>/     ← collected reels, ready for CapCut
+data/contents.json          ← project queue / single source of truth (auto-managed)
+data/contents.json.bak      ← rolling backup (auto)
+phases/                     ← Playwright automation (image_phase.py, video_phase.py)
+bot.py / monitor.py / parse_analysis.py
+```
+
+The Chrome extension is **not** in this folder — it lives in the sibling
+`Facebook Reels Extension/`.
+
+---
+
+## File naming
+
+| File (in `working/`)              | Description                          |
+|-----------------------------------|--------------------------------------|
+| `reel_0001-storyboard.png`        | Storyboard image                     |
+| `reel_0001-scene-01.png` …        | Scene images (one per scene)         |
+| `reel_0001-thumbnail.png`         | Thumbnail (optional)                 |
+| `reel_0001-scene-01-vdo.mp4` …    | Scene videos                         |
+
+After `archive`, files land in `ready/reel_0001/` renamed to `storyboard.png`,
+`thumbnail.png`, and `scene-01.mp4 … scene-N.mp4`.
+
+---
+
+## Project status values
 
 | Status | Meaning |
 |--------|---------|
-| `pending` | Queued, no images yet |
-| `storyboard_done` | Storyboard downloaded |
-| `images_done` | All scene images downloaded, ready for video |
-| `videos_in_progress` | Videos generating (some done) |
-| `complete` | All scene videos in `output/` folder |
-| `error` | Something failed — check the extension log |
+| `pending` | Queued, no processing started |
+| `storyboard_done` | Storyboard image generated |
+| `images_done` | All scene images + thumbnail done, ready for video |
+| `videos_in_progress` / `videos_partial` | Some videos done |
+| `videos_done` / `complete` | All videos done |
+| `archived` | Files moved to `ready/`, ready for CapCut |
 
 ---
 
 ## Troubleshooting
 
-**Extension can't read projects:** Make sure `monitor.py` is running (it serves `http://localhost:7788`).
+**Extension can't read projects:** make sure `monitor.py` is running (it serves
+`http://localhost:7788`).
 
-**ChatGPT buttons not found:** ChatGPT's UI changes often. If the bot gets stuck, open DevTools Console on chatgpt.com, inspect the button you need, and update the selector in `extension/content_chatgpt.js`.
+**ChatGPT / Google Flow buttons not found:** their UIs change often. For the terminal
+path, update selectors in `phases/image_phase.py` / `phases/video_phase.py`. For the
+extension, update `content/chatgpt.js` / `content/flow.js` in the sibling
+`Facebook Reels Extension/` folder.
 
-**Google Flow buttons not found:** Same approach — inspect and update selectors in `extension/content_flow.js`.
+**Video phase says "No scenes pending" but no MP4s exist:** a flag drifted from disk.
+Run `py bot.py reconcile` then `reconcile apply` (while `monitor.py` is idle).
 
-**Files not renamed correctly:** Check that `monitor.py` is running and the download filenames from the extension match the pattern `reel_NNNN-scene-NN.png` / `reel_NNNN-vdo-NN.mp4`.
+**`contents.json` corrupt (`JSONDecodeError`):** run `py repair_contents.py`, then
+`py bot.py status` to confirm. This only happens if data files were copied between
+machines — never do that (`data/` and `pages/` are machine-local).
 
-**Multiple character sheets in `input/character_sheets/`:** The auto-detection picks the only file if there's one, or one whose name matches the project ID. For others, use the **Change** button in the extension popup to select the correct file.
+**Multiple character sheets in a page's `briefs/`:** auto-detection picks the first
+image file; the extension popup's **Change** button can override it.
