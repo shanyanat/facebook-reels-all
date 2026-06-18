@@ -663,10 +663,23 @@ def do_pipeline(page: str):
     # 2. Register any new briefs sitting in this page's briefs/ folder.
     do_queue()
 
-    projects = [p for p in load_contents() if p.get("page") == page]
+    # Process ONLY reels whose brief .txt is still in this page's briefs/ folder —
+    # the same "ground truth queue" that status uses. contents.json keeps every
+    # old reel ever queued for this page (their `page` survives a renamepage, and
+    # they are never pruned until collected), so filtering by page alone would
+    # re-run ancient reels whose briefs are long gone and whose character-sheet
+    # paths point at the pre-rename folder. The brief-in-folder check is what
+    # restricts the run to the current briefs the user actually dropped in.
+    briefs_dir = PAGES_DIR / page / "briefs"
+    projects = [
+        p for p in load_contents()
+        if p.get("page") == page
+        and p.get("source_txt")
+        and (briefs_dir / p["source_txt"]).exists()
+    ]
     if not projects:
-        notify(f"ℹ️ Pipeline: no projects for {page}")
-        print(f"  No projects for {page}.")
+        notify(f"ℹ️ Pipeline: no current briefs in pages/{page}/briefs/")
+        print(f"  No briefs in pages/{page}/briefs/ — drop .txt files there first.")
         return
 
     working_dir = PAGES_DIR / page / "working"
