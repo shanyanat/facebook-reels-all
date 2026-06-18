@@ -119,6 +119,60 @@ async def connect_chrome():
     return pw, context
 
 
+async def _cloudflare_present(page: Page) -> bool:
+    """True while a Cloudflare challenge/checkbox is on screen.
+    Detects both the automatic 'Just a moment...' interstitial and the manual
+    'Verify you are human' Turnstile checkbox."""
+    try:
+        title = (await page.title()).lower()
+    except Exception:
+        title = ""
+    if "just a moment" in title:
+        return True
+    try:
+        txt = (await page.evaluate("() => (document.body?.innerText || '').toLowerCase()"))
+    except Exception:
+        txt = ""
+    return (
+        "verify you are human" in txt
+        or "checking your browser" in txt
+        or "needs to review the security" in txt
+    )
+
+
+async def wait_past_cloudflare(page: Page) -> None:
+    """Wait for any Cloudflare challenge to clear.
+
+    The automatic JS challenge usually passes in a few seconds. If it doesn't,
+    a manual 'Verify you are human' checkbox is up — the bot CANNOT click it
+    (Cloudflare blocks automated clicks), so we send ONE Telegram alert and wait
+    up to 5 minutes for a human to click it, then continue automatically.
+    """
+    CF_MAX_WAIT = 300   # up to 5 min for a human to click the checkbox
+    CF_GRACE = 12       # let the automatic challenge clear before pinging anyone
+    start = time.time()
+    alerted = False
+    first = True
+    while await _cloudflare_present(page):
+        waited = time.time() - start
+        if first:
+            log("Cloudflare check detected — waiting for it to clear ...")
+            first = False
+        if not alerted and waited >= CF_GRACE:
+            notify("⚠️ ChatGPT shows Cloudflare 'Verify you are human' — please "
+                   "click the box in the Chrome window. Waiting up to 5 minutes.")
+            log("Manual Cloudflare checkbox likely — Telegram alert sent. "
+                "Click it in the Chrome window; the bot will continue on its own.")
+            alerted = True
+        if waited >= CF_MAX_WAIT:
+            log(f"WARNING: Cloudflare did not clear in {CF_MAX_WAIT}s — proceeding anyway.")
+            return
+        await page.wait_for_timeout(2000)
+    if alerted:
+        log("Cloudflare cleared — continuing.")
+        notify("✅ Cloudflare cleared — continuing the run.")
+
+
 async def ensure_logged_in_chatgpt(context: BrowserContext) -> Page:
     """Open a fresh ChatGPT chat and verify login. Handles Cloudflare & modals."""
     page = await context.new_page()
@@ -128,21 +182,10 @@ async def ensure_logged_in_chatgpt(context: BrowserContext) -> Page:
     except Exception as e:
         log(f"Navigation notice: {e}")
 
-    # ── Wait for Cloudflare "Just a moment..." to clear ──────────────────────
-    # Cloudflare shows this title while its JS challenge runs.
-    # With stealth flags it should clear in <5 s; allow up to 30 s.
-    cf_waited = 0
-    while cf_waited < 30:
-        title = await page.title()
-        if "just a moment" not in title.lower():
-            break
-        if cf_waited == 0:
-            log("Cloudflare check running — waiting for it to pass ...")
-        await page.wait_for_timeout(2000)
-        cf_waited += 2
-    else:
-        log("WARNING: Cloudflare check did not clear in 30 s. "
-            "Stealth flags may not be working — see Chrome window.")
+    # ── Wait past any Cloudflare challenge (auto JS or manual checkbox) ───────
+    # If a manual "Verify you are human" box appears, this alerts via Telegram
+    # and waits up to 5 min for a human to click it (the bot can't click it).
+    await wait_past_cloudflare(page)
 
     await page.wait_for_timeout(2000)
 
