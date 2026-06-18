@@ -206,6 +206,57 @@ def detect_aspect_ratio(storyboard_prompt):
     return "9:16"
 
 
+# ── Facebook caption extraction ────────────────────────────────────────────────
+# The brief ends with a section like:
+#     FACEBOOK CAPTION (US Market — SEO Optimized)
+#     Hook (1 ประโยค):
+#     <hook>
+#     Body (2-3 ประโยค):
+#     <body>
+#     CTA (1 ประโยค):
+#     <cta>
+#     Hashtags (5 คำ):
+#     #tag1 ... #tag5
+#     The End of CAPTION & HASHTAGS
+# parse_txt() ignores this for image/video generation, but the auto-upload step
+# (Phase 3) needs it as the Reel description, so we capture + clean it here.
+
+_CAPTION_HEADER_RE = re.compile(r"^[ \t=]*FACEBOOK\s+CAPTION\b[^\n]*$",
+                                re.IGNORECASE | re.MULTILINE)
+_CAPTION_END_RE = re.compile(r"^[^\n]*\bthe\s+end\s+of\s+caption\b[^\n]*$",
+                             re.IGNORECASE | re.MULTILINE)
+# Label lines like "Hook (1 ประโยค):" / "Body:" / "CTA:" / "Hashtags (5 คำ):"
+_CAPTION_LABEL_RE = re.compile(
+    r"^\s*(hook|body|cta|call to action|hashtags?|caption)\b[^\n]*:\s*$",
+    re.IGNORECASE)
+_SEP_ONLY_RE = re.compile(r"^[\s=\-]+$")
+
+
+def extract_facebook_caption(text: str) -> str:
+    """Return the post-ready Facebook caption (hook + body + CTA + hashtags) with
+    the section header, the 'Hook/Body/CTA/Hashtags' labels, '===' separators, and
+    the end marker stripped. Returns '' if the brief has no caption section."""
+    mh = _CAPTION_HEADER_RE.search(text)
+    if not mh:
+        return ""
+    start = mh.end()
+    me = _CAPTION_END_RE.search(text, start)
+    block = text[start:me.start()] if me else text[start:]
+
+    kept = []
+    for ln in block.splitlines():
+        if _SEP_ONLY_RE.match(ln):       # separator-only line (=== / --- / blank-ish)
+            if ln.strip():
+                continue                 # drop pure ===/--- rules
+        if _CAPTION_LABEL_RE.match(ln):  # drop "Hook (...):" style labels
+            continue
+        kept.append(ln.rstrip())
+
+    out = "\n".join(kept).strip("\n")
+    out = re.sub(r"\n{3,}", "\n\n", out)  # collapse runs of blank lines
+    return out.strip()
+
+
 def parse_txt(txt_path):
     """
     Parse analysis output .txt file.
@@ -268,6 +319,7 @@ def parse_txt(txt_path):
     return {
         "storyboard_prompt": storyboard_prompt,
         "thumbnail_prompt": thumbnail_prompt,
+        "facebook_caption": extract_facebook_caption(text),
         "scenes": scenes,
         "total_scenes": total_scenes,
         "aspect_ratio": detect_aspect_ratio(storyboard_prompt),
@@ -302,6 +354,7 @@ def add_project(txt_path, page_name=None, char_sheet_override=None):
         "character_sheet": char_sheet,
         "storyboard_prompt": parsed["storyboard_prompt"],
         "thumbnail_prompt": parsed.get("thumbnail_prompt", ""),
+        "facebook_caption": parsed.get("facebook_caption", ""),
         "scenes": parsed["scenes"],
         "project_status": "pending",
     }
@@ -345,6 +398,7 @@ def update_project_prompts(project_id: str) -> bool:
 
     project["storyboard_prompt"] = parsed["storyboard_prompt"]
     project["thumbnail_prompt"] = parsed.get("thumbnail_prompt", "")
+    project["facebook_caption"] = parsed.get("facebook_caption", "")
 
     char_sheet = project.get("character_sheet")
     if not char_sheet or not (BASE_DIR / char_sheet).exists():

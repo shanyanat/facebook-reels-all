@@ -14,6 +14,7 @@ import asyncio
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +24,8 @@ BASE_DIR     = Path(__file__).parent
 PAGES_DIR    = BASE_DIR / "pages"
 COMPLETE_DIR = BASE_DIR / "complete"
 ARCHIVE_FILE = BASE_DIR / "data" / "contents.archive.json"
+EDITOR_DIR   = BASE_DIR.parent / "Ai Auto Editor"      # sibling tool (FFmpeg + Gemini)
+EDITOR_MAIN  = EDITOR_DIR / "main.py"
 
 
 def _disk_status(pid: str, total: int, working_dir: Path, ready_dir: Path):
@@ -586,6 +589,172 @@ def do_prune(apply: bool = False):
     print("Run 'py bot.py status' to confirm.")
 
 
+def _run_editor_batch(page: str, notify) -> bool:
+    """Run Ai Auto Editor over complete/<page>/ (all reels, skips already-done ones).
+    Returns True if it ran cleanly (or had nothing to do). Never raises."""
+    complete_page = COMPLETE_DIR / page
+    if not complete_page.exists():
+        print(f"  [edit] no complete/{page}/ folder yet — skipping editor")
+        return True
+    if not EDITOR_MAIN.exists():
+        msg = f"Ai Auto Editor not found at {EDITOR_MAIN} — skipping edit step for {page}"
+        print(f"  [edit] {msg}")
+        notify(f"⚠️ {msg}")
+        return False
+    print(f"  [edit] Ai Auto Editor --batch complete/{page}/ ...")
+    try:
+        # cwd = editor dir so its `from common import ...`, config.json and .env resolve.
+        result = subprocess.run(
+            [sys.executable, str(EDITOR_MAIN), "--batch", str(complete_page)],
+            cwd=str(EDITOR_DIR),
+            timeout=3 * 3600,   # generous: many reels × FFmpeg renders
+        )
+    except Exception as e:
+        print(f"  [edit] ERROR launching editor: {e}")
+        notify(f"❌ Edit step failed to launch for {page}: {e}")
+        return False
+    if result.returncode != 0:
+        notify(f"⚠️ Ai Auto Editor exited with code {result.returncode} for {page}")
+        return False
+    return True
+
+
+def do_pipeline(page: str):
+    """End-to-end automation for ONE page (or every page when page == 'all').
+
+    Sequential by design — image and video phases share the Chrome profile, so
+    they must never overlap. Per reel: images -> verify -> videos -> verify ->
+    archive. Then collect the whole page and run the auto-editor over it.
+
+    Disk truth gates each step (a phase that 'returns' on a logged error without
+    raising still leaves files missing on disk, so we detect that and alert
+    instead of archiving a half-finished reel). A failure on one reel is alerted
+    and skipped; the pipeline continues with the rest.
+    """
+    from notify import notify
+    from preflight import preflight
+
+    # 'all' (or empty) -> loop every page folder, isolating failures per page.
+    if not page or page == "all":
+        pages = [d.name for d in sorted(PAGES_DIR.iterdir()) if d.is_dir()] \
+            if PAGES_DIR.exists() else []
+        if not pages:
+            print("No page folders found.")
+            return
+        for pg in pages:
+            try:
+                do_pipeline(pg)
+            except (Exception, SystemExit) as e:
+                notify(f"❌ Pipeline crashed on page {pg}: {e!r}")
+                print(f"[pipeline] ERROR on {pg}: {e!r} — continuing to next page")
+        return
+
+    if not (PAGES_DIR / page).exists():
+        sys.exit(f"Page folder not found: pages/{page}/")
+
+    # 1. Pre-flight (kills stray Chrome, disk check). Abort the page if it fails.
+    if not preflight():
+        notify(f"🛑 Pipeline aborted for {page}: preflight failed (see disk space).")
+        return
+
+    notify(f"▶️ Pipeline started: {page}")
+    print(f"\n{'='*60}\nPIPELINE: {page}\n{'='*60}")
+
+    # 2. Register any new briefs sitting in this page's briefs/ folder.
+    do_queue()
+
+    projects = [p for p in load_contents() if p.get("page") == page]
+    if not projects:
+        notify(f"ℹ️ Pipeline: no projects for {page}")
+        print(f"  No projects for {page}.")
+        return
+
+    working_dir = PAGES_DIR / page / "working"
+    archived_ok = 0
+
+    for p in projects:
+        pid   = p["id"]
+        total = p.get("total_scenes", 0)
+        ready_dir = PAGES_DIR / page / "ready" / pid
+        print(f"\n--- {pid} ({total} scenes) ---")
+
+        # Skip reels already fully done + collected.
+        if (COMPLETE_DIR / page / pid).exists():
+            print(f"  {pid}: already collected — skipping to edit step")
+            continue
+
+        # 3. Images (storyboard + scenes + thumbnail). Disk-gated.
+        img, _, _ = _disk_status(pid, total, working_dir, ready_dir)
+        if total and img >= total:
+            print(f"  {pid}: images already on disk ({img}/{total})")
+        else:
+            from phases.image_phase import run as run_images
+            # Catch SystemExit too: ensure_logged_in_chatgpt() calls sys.exit() on a
+            # login lapse, which would otherwise abort the whole pipeline silently.
+            try:
+                asyncio.run(run_images(p))
+            except (Exception, SystemExit) as e:
+                notify(f"❌ {pid} ({page}): image phase aborted ({e!r}) — skipping reel")
+                print(f"  {pid}: image phase aborted ({e!r}) — skipping")
+                continue
+            img, _, _ = _disk_status(pid, total, working_dir, ready_dir)
+            if not total or img < total:
+                notify(f"❌ {pid} ({page}): images incomplete ({img}/{total}) — skipping this reel")
+                print(f"  {pid}: images incomplete ({img}/{total}) — skipping")
+                continue
+
+        # Reload project from disk: the image phase wrote image_status="done" into
+        # contents.json but did NOT mutate our in-memory dict. The video phase
+        # selects scenes where image_status=="done", so it must see fresh state or
+        # it would generate nothing.
+        p = next((x for x in load_contents() if x["id"] == pid), p)
+
+        # 4. Videos. Disk-gated.
+        _, vid, _ = _disk_status(pid, total, working_dir, ready_dir)
+        if total and vid >= total:
+            print(f"  {pid}: videos already on disk ({vid}/{total})")
+        else:
+            from phases.video_phase import run as run_videos
+            try:
+                asyncio.run(run_videos(p))
+            except (Exception, SystemExit) as e:
+                notify(f"❌ {pid} ({page}): video phase aborted ({e!r}) — skipping reel")
+                print(f"  {pid}: video phase aborted ({e!r}) — skipping")
+                continue
+            _, vid, _ = _disk_status(pid, total, working_dir, ready_dir)
+            if not total or vid < total:
+                notify(f"❌ {pid} ({page}): videos incomplete ({vid}/{total}) — skipping this reel")
+                print(f"  {pid}: videos incomplete ({vid}/{total}) — skipping")
+                continue
+
+        # 5. Archive this finished reel into ready/<pid>/.
+        try:
+            do_archive(pid)
+            archived_ok += 1
+        except (Exception, SystemExit) as e:
+            notify(f"❌ {pid} ({page}): archive failed ({e!r})")
+            print(f"  {pid}: archive failed ({e!r})")
+            continue
+
+    # 6. Collect all archived reels of every page into complete/<page>/.
+    do_collect()
+
+    # 7. Auto-edit the whole page (skips reels already rendered).
+    edit_ok = _run_editor_batch(page, notify)
+
+    edited = sorted(
+        d.name for d in (COMPLETE_DIR / page).iterdir()
+        if (COMPLETE_DIR / page).exists() and d.is_dir()
+        and any(d.glob("EDITED_*.mp4"))
+    ) if (COMPLETE_DIR / page).exists() else []
+
+    notify(f"✅ Pipeline done: {page} — {archived_ok} reel(s) archived this run, "
+           f"{len(edited)} edited mp4(s) ready"
+           + ("" if edit_ok else " (edit step had issues — check logs)"))
+    print(f"\n{'='*60}\nPIPELINE DONE: {page} — {archived_ok} archived, "
+          f"{len(edited)} edited\n{'='*60}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="FB Reels Automation Bot — Playwright/terminal approach",
@@ -600,8 +769,8 @@ Examples:
   py bot.py archive reel_0001
         """,
     )
-    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup"])
-    parser.add_argument("project_id", nargs="?", help="reel_0001, page name, old page name for renamepage, or 'apply' for reconcile/prune")
+    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup", "pipeline"])
+    parser.add_argument("project_id", nargs="?", help="reel_0001, page name, 'all' for pipeline, old page name for renamepage, or 'apply' for reconcile/prune")
     parser.add_argument("new_name", nargs="?", help="new page name (renamepage only)")
     args = parser.parse_args()
 
@@ -657,6 +826,12 @@ Examples:
 
     if args.command == "cleanup":
         do_cleanup(apply=(args.project_id == "apply"))
+        return
+
+    if args.command == "pipeline":
+        if not args.project_id:
+            sys.exit("Usage: py bot.py pipeline <page>   (or 'all' for every page)")
+        do_pipeline(args.project_id)
         return
 
     project = pick_project(args.project_id)
