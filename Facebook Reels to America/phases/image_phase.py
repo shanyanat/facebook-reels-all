@@ -678,64 +678,51 @@ async def fill_chat_input(page: Page, text: str):
 
 
 async def upload_file(page: Page, file_path: Path):
-    """Upload a file to ChatGPT using the native OS file chooser.
+    """Upload a file to ChatGPT.
 
-    expect_file_chooser() is the only reliable approach for React apps.
-    set_input_files() on a hidden React input dispatches a DOM change event
-    but ChatGPT's React fiber never processes it — no thumbnail appears.
+    Primary path is the "+" → "Add photos & files" menu wrapped in
+    expect_file_chooser(): Playwright intercepts the chooser before the OS dialog
+    renders, so nothing is ever left on screen. We deliberately do NOT use the
+    Ctrl+U shortcut anymore — when expect_file_chooser missed its event, Ctrl+U
+    left a real native Open dialog stuck open that page.keyboard can't close
+    (Escape goes to the page, not the OS modal), forcing a manual cancel and
+    breaking unattended runs.
     """
     size_kb = file_path.stat().st_size // 1024
     log(f"Uploading: {file_path.name} ({size_kb} KB)...")
 
     fc = None
 
-    # ── Strategy 1: Ctrl+U shortcut → native file dialog ─────────────────────
-    # Dump confirmed: "Add photos & filesCtrlU" — this shortcut works in the
-    # compose area and opens the OS file picker which Playwright can intercept.
+    # ── Strategy 1: "+" → "Add photos & files" (Playwright-captured chooser) ──
     try:
-        compose = page.locator('div[role="textbox"]').first
-        if await compose.count():
-            await compose.click()
-        async with page.expect_file_chooser(timeout=8000) as fc_info:
-            await page.keyboard.press("Control+u")
-        fc = await fc_info.value
-        log("File chooser opened via Ctrl+U")
+        plus = page.locator("[data-testid='composer-plus-btn']").first
+        if await plus.count() and await plus.is_visible():
+            async with page.expect_file_chooser(timeout=10000) as fc_info:
+                await plus.click()
+                await page.wait_for_timeout(600)
+                add_item = page.locator("[role='menuitem']").filter(
+                    has_text="Add photos"
+                ).first
+                if await add_item.count() and await add_item.is_visible():
+                    await add_item.click()
+                else:
+                    await page.keyboard.press("Escape")
+                    raise Exception("'Add photos & files' not found in menu")
+            fc = await fc_info.value
+            log("File chooser opened via + menu")
     except Exception as e:
-        log(f"Ctrl+U failed ({e}) — dismissing any open dialog and trying menu...")
+        log(f"+ menu upload failed ({e}) — trying hidden input fallback...")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(400)
 
-    # ── Strategy 2: "+" → "Add photos & files" → native file dialog ──────────
-    if fc is None:
-        try:
-            plus = page.locator("[data-testid='composer-plus-btn']").first
-            if await plus.count() and await plus.is_visible():
-                async with page.expect_file_chooser(timeout=8000) as fc_info:
-                    await plus.click()
-                    await page.wait_for_timeout(600)
-                    add_item = page.locator("[role='menuitem']").filter(
-                        has_text="Add photos"
-                    ).first
-                    if await add_item.count() and await add_item.is_visible():
-                        await add_item.click()
-                    else:
-                        await page.keyboard.press("Escape")
-                        raise Exception("'Add photos & files' not found in menu")
-                fc = await fc_info.value
-                log("File chooser opened via + menu")
-        except Exception as e:
-            log(f"Menu approach failed ({e}) — dismissing any open dialog...")
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(400)
-
-    # ── Strategy 3: direct set_input_files (last resort) ─────────────────────
+    # ── Strategy 2: direct set_input_files on the hidden input (fallback) ─────
     if fc is None:
         fi = page.locator(
             "input[data-testid='upload-photos-input'], input[type='file']"
         ).first
         if await fi.count():
             await fi.set_input_files(str(file_path))
-            log(f"File set via direct input (fallback): {file_path.name}")
+            log(f"File set via hidden input (fallback): {file_path.name}")
         else:
             log(f"ERROR: No upload mechanism found — skipping {file_path.name}")
             return

@@ -967,6 +967,13 @@ async def download_video(page: Page, dest_path: Path) -> bool:
         if dl_attempt > 0:
             log(f"Download retry {dl_attempt + 1}/3...")
 
+        # Prefer 1080p on the first try. If it fails — Flow's "resolution increase
+        # failed" makes the 1080p download never start, so expect_download just
+        # times out — fall back to 720p on later tries instead of hammering 1080p
+        # again. 720p is already rendered, so it downloads immediately. This turns
+        # a ~30-minute stall into ~1 extra minute.
+        res_order = ["1080p", "720p"] if dl_attempt == 0 else ["720p", "1080p"]
+
         card_box = await _find_video_card(page)
         if not card_box:
             log("ERROR: Cannot locate any video card on the page")
@@ -1066,11 +1073,11 @@ async def download_video(page: Page, dest_path: Path) -> bool:
         await page.wait_for_timeout(700)
 
         try:
-            async with page.expect_download(timeout=180000) as dl_info:
+            async with page.expect_download(timeout=90000) as dl_info:
                 # Locate resolution option INSIDE the block so it is fresh, not stale
                 res_loc = None
                 res_label = None
-                for res in ["1080p", "720p"]:
+                for res in res_order:
                     loc = page.locator(
                         f"[role='menuitem']:has-text('{res}'), "
                         f"button:has-text('{res}'), a:has-text('{res}')"
@@ -1087,7 +1094,7 @@ async def download_video(page: Page, dest_path: Path) -> bool:
                     # Submenu may have closed — re-hover to reopen it, then try again
                     await dl_loc.hover()
                     await page.wait_for_timeout(500)
-                    for res in ["1080p", "720p"]:
+                    for res in res_order:
                         loc = page.locator(
                             f"[role='menuitem']:has-text('{res}'), "
                             f"button:has-text('{res}'), a:has-text('{res}')"
