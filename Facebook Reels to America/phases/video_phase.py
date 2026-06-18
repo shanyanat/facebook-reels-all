@@ -30,6 +30,7 @@ FLOW_URL = "https://labs.google/fx/th/tools/flow"
 
 sys.path.insert(0, str(BASE_DIR))
 from parse_analysis import load_contents, save_contents
+from notify import notify, notify_error
 
 
 # ── Status helpers ────────────────────────────────────────────────────────────
@@ -1303,6 +1304,7 @@ async def run(project: dict):
             log(f"PROJECT COMPLETE  [{pid}]")
             log(f"   Videos saved to: pages/{page_name}/working/")
             log(f"{'='*50}")
+            notify(f"🎬 Videos complete: {pid} ({page_name}) — all {len(pending)} scene(s)")
         else:
             error_count = len(pending) - done_count
             _update_project(pid, project_status="videos_partial")
@@ -1312,7 +1314,12 @@ async def run(project: dict):
             if error_count:
                 log(f"  Errors     : {error_count}  (re-run to retry)")
             log(f"{'='*50}")
+            notify(f"⚠️ Videos partial: {pid} ({page_name}) — "
+                   f"{done_count}/{len(pending)} ok, {error_count} failed (re-run to retry)")
 
+    except Exception as e:
+        notify_error(f"video_phase {pid} ({page_name})", e)
+        raise
     finally:
         await context.close()
         await pw.stop()

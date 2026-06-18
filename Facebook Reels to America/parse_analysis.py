@@ -132,15 +132,44 @@ def save_contents(data):
             _release_lock()
 
 
+def _collect_reel_nums(contents) -> set:
+    """Every reel number known ANYWHERE — live contents.json, the pruned
+    archive, and the complete/ folders on disk. The next id must never reuse a
+    number that already exists in any of these, or `prune` (which removes the
+    highest-numbered completed reels from contents.json) would make the counter
+    regress and collide with already-archived reels — silent data loss."""
+    nums = set()
+
+    def _add(ids):
+        for eid in ids:
+            m = re.search(r"reel_(\d+)", eid or "")
+            if m:
+                nums.add(int(m.group(1)))
+
+    _add(c.get("id", "") for c in contents)
+
+    # Pruned-but-not-forgotten entries.
+    archive = DATA_DIR / "contents.archive.json"
+    if archive.exists():
+        try:
+            data = json.loads(archive.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                _add(c.get("id", "") for c in data)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Disk backstop: collected deliverables survive even if both JSON files were lost.
+    complete_dir = BASE_DIR / "complete"
+    if complete_dir.exists():
+        for page_dir in complete_dir.iterdir():
+            if page_dir.is_dir():
+                _add(rd.name for rd in page_dir.iterdir() if rd.is_dir())
+
+    return nums
+
+
 def next_project_id(contents):
-    if not contents:
-        return "reel_0001"
-    existing = [c["id"] for c in contents if c["id"].startswith("reel_")]
-    nums = []
-    for eid in existing:
-        m = re.search(r"reel_(\d+)", eid)
-        if m:
-            nums.append(int(m.group(1)))
+    nums = _collect_reel_nums(contents)
     nxt = max(nums) + 1 if nums else 1
     return f"reel_{nxt:04d}"
 

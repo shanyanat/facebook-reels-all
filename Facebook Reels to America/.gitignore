@@ -26,3 +26,9 @@ __pycache__/
 
 # --- Machine-local Claude Code settings ---
 .claude/settings.local.json
+
+# --- Secrets (never commit tokens) ---
+notify_config.json
+secrets.json
+*.secrets.json
+.env

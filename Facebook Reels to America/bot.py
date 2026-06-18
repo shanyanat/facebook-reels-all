@@ -11,6 +11,7 @@ Requires Chrome running with --remote-debugging-port=9222.
 
 import argparse
 import asyncio
+import json
 import re
 import shutil
 import sys
@@ -18,8 +19,10 @@ from pathlib import Path
 
 from parse_analysis import load_contents, save_contents
 
-BASE_DIR    = Path(__file__).parent
-PAGES_DIR   = BASE_DIR / "pages"
+BASE_DIR     = Path(__file__).parent
+PAGES_DIR    = BASE_DIR / "pages"
+COMPLETE_DIR = BASE_DIR / "complete"
+ARCHIVE_FILE = BASE_DIR / "data" / "contents.archive.json"
 
 
 def _disk_status(pid: str, total: int, working_dir: Path, ready_dir: Path):
@@ -338,7 +341,6 @@ def do_renamepage(old_name: str, new_name: str):
 
 def do_collect():
     """Move all ready/reel_*/ folders into complete/<page>/reel_*/ for editing."""
-    COMPLETE_DIR = BASE_DIR / "complete"
     moved = 0
     for page_dir in sorted(PAGES_DIR.iterdir()):
         if not page_dir.is_dir():
@@ -428,6 +430,162 @@ def do_reconcile(apply: bool = False):
         print("\nDRY-RUN — nothing written. Re-run 'py bot.py reconcile apply' to persist.")
 
 
+def _dir_size(path: Path) -> int:
+    """Total size in bytes of a file or directory tree (best-effort)."""
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for f in path.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def do_cleanup(apply: bool = False):
+    """Reclaim disk by deleting the heavy SOURCE clips of reels that are fully done.
+
+    Only touches a reel folder in complete/<page>/<reel>/ when BOTH are true:
+      * an `.uploaded` marker exists (written by the Phase-3 uploader after a
+        confirmed Facebook post), AND
+      * the edited deliverable `EDITED_*.mp4` is present.
+    Then it removes the per-scene `scene-NN.mp4` source clips and the editor's
+    `.aiedit_cache/` — the bulk of the space — while KEEPING the edited mp4,
+    storyboard.png, thumbnail.png, and the .txt brief.
+
+    Dry-run by default — prints what it WOULD delete. Pass apply=True
+    (CLI: 'cleanup apply') to actually delete.
+    """
+    if not COMPLETE_DIR.exists():
+        print("Cleanup: no complete/ folder yet — nothing to do.")
+        return
+
+    targets = []  # (reel_dir, [paths to delete], bytes)
+    for page_dir in sorted(COMPLETE_DIR.iterdir()):
+        if not page_dir.is_dir():
+            continue
+        for reel_dir in sorted(page_dir.iterdir()):
+            if not reel_dir.is_dir() or not reel_dir.name.startswith("reel_"):
+                continue
+            if not (reel_dir / ".uploaded").exists():
+                continue   # not confirmed-uploaded — leave it fully intact
+            if not any(reel_dir.glob("EDITED_*.mp4")):
+                continue   # no edited deliverable — keep sources as a safety net
+
+            dels = list(reel_dir.glob("scene-*.mp4"))
+            cache = reel_dir / ".aiedit_cache"
+            if cache.exists():
+                dels.append(cache)
+            if not dels:
+                continue
+            size = sum(_dir_size(p) for p in dels)
+            targets.append((reel_dir, dels, size))
+
+    if not targets:
+        print("Cleanup: nothing to reclaim — no uploaded reels with source clips found.")
+        print("  (A reel is eligible only after the uploader writes an '.uploaded' marker.)")
+        return
+
+    total_bytes = sum(t[2] for t in targets)
+    print(f"{'REEL':<12} {'PAGE':<26} {'FILES':<7} MB")
+    print("-" * 56)
+    for reel_dir, dels, size in targets:
+        n_files = sum(1 for _ in dels)
+        print(f"{reel_dir.name:<12} {reel_dir.parent.name:<26} {n_files:<7} {size/1024/1024:.1f}")
+    print("-" * 56)
+    print(f"{len(targets)} reel(s), {total_bytes/1024/1024:.1f} MB would be reclaimed "
+          f"(edited mp4 + thumbnail + brief kept).")
+
+    if not apply:
+        print("\nDRY-RUN — nothing deleted. Re-run 'py bot.py cleanup apply' to reclaim.")
+        return
+
+    reclaimed = 0
+    for reel_dir, dels, size in targets:
+        for p in dels:
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink()
+            except OSError as e:
+                print(f"  WARNING: could not delete {p.name} in {reel_dir.name}: {e}")
+        reclaimed += size
+    print(f"\nReclaimed {reclaimed/1024/1024:.1f} MB from {len(targets)} reel(s).")
+
+
+def do_prune(apply: bool = False):
+    """Move finished projects out of the live contents.json into an archive file.
+
+    A project is prunable only when it is BOTH:
+      * project_status == "complete", AND
+      * its deliverables have been collected to complete/<page>/<reel>/ (folder exists).
+
+    These entries are pure dead weight in contents.json — every scene-flag save
+    rewrites the whole file, so trimming it keeps writes fast and shrinks the
+    blast radius of any corruption. Pruned entries are appended to
+    data/contents.archive.json (never deleted), so nothing is lost.
+
+    Dry-run by default — prints what it WOULD move and writes nothing.
+    Pass apply=True (CLI: 'prune apply') to persist.
+    """
+    contents = load_contents()
+    to_prune, keep = [], []
+    for p in contents:
+        pid  = p["id"]
+        page = p.get("page")
+        collected = bool(page and (COMPLETE_DIR / page / pid).exists())
+        if p.get("project_status") == "complete" and collected:
+            to_prune.append(p)
+        else:
+            keep.append(p)
+
+    if not to_prune:
+        print("Prune: nothing to archive — no completed + collected projects in contents.json.")
+        print(f"Live contents.json has {len(contents)} project(s).")
+        return
+
+    print(f"{'REEL':<12} {'PAGE':<26} STATUS")
+    print("-" * 50)
+    for p in to_prune:
+        print(f"{p['id']:<12} {(p.get('page') or '-'):<26} {p.get('project_status')}")
+    print("-" * 50)
+    print(f"{len(to_prune)} project(s) would move to data/contents.archive.json; "
+          f"{len(keep)} remain live.")
+
+    if not apply:
+        print("\nDRY-RUN — nothing written. Re-run 'py bot.py prune apply' to persist.")
+        return
+
+    # Append to the archive file (read existing, extend, atomic write).
+    existing = []
+    if ARCHIVE_FILE.exists():
+        try:
+            existing = json.loads(ARCHIVE_FILE.read_text(encoding="utf-8"))
+            if not isinstance(existing, list):
+                existing = []
+        except (json.JSONDecodeError, OSError):
+            existing = []   # corrupt/old archive — start fresh rather than crash
+    existing.extend(to_prune)
+
+    ARCHIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ARCHIVE_FILE.with_name(ARCHIVE_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(ARCHIVE_FILE)   # atomic swap — readers never see a half file
+
+    save_contents(keep)   # crash-safe (validated + backed up) — see parse_analysis
+
+    print(f"\nArchived {len(to_prune)} project(s) → data/contents.archive.json "
+          f"({len(existing)} total archived).")
+    print(f"Live contents.json now has {len(keep)} project(s).")
+    print("Run 'py bot.py status' to confirm.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="FB Reels Automation Bot — Playwright/terminal approach",
@@ -442,8 +600,8 @@ Examples:
   py bot.py archive reel_0001
         """,
     )
-    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile"])
-    parser.add_argument("project_id", nargs="?", help="reel_0001, page name, old page name for renamepage, or 'apply' for reconcile")
+    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup"])
+    parser.add_argument("project_id", nargs="?", help="reel_0001, page name, old page name for renamepage, or 'apply' for reconcile/prune")
     parser.add_argument("new_name", nargs="?", help="new page name (renamepage only)")
     args = parser.parse_args()
 
@@ -487,6 +645,18 @@ Examples:
 
     if args.command == "reconcile":
         do_reconcile(apply=(args.project_id == "apply"))
+        return
+
+    if args.command == "prune":
+        do_prune(apply=(args.project_id == "apply"))
+        return
+
+    if args.command == "preflight":
+        from preflight import preflight
+        sys.exit(0 if preflight() else 1)
+
+    if args.command == "cleanup":
+        do_cleanup(apply=(args.project_id == "apply"))
         return
 
     project = pick_project(args.project_id)

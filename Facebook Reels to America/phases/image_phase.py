@@ -25,6 +25,7 @@ CHROME_PROFILE = Path("C:/temp/chrome-bot")
 
 sys.path.insert(0, str(BASE_DIR))
 from parse_analysis import load_contents, save_contents, detect_aspect_ratio
+from notify import notify, notify_error
 
 
 # ── Status helpers ────────────────────────────────────────────────────────────
@@ -1173,7 +1174,11 @@ async def run(project: dict):
         log(f"✓ IMAGE PHASE COMPLETE  [{pid}]")
         log(f"\n  Next step  : py bot.py videos {pid}")
         log(f"{'='*50}")
+        notify(f"🖼️ Images complete: {pid} ({page_name})")
 
+    except Exception as e:
+        notify_error(f"image_phase {pid} ({page_name})", e)
+        raise
     finally:
         await context.close()
         await pw.stop()

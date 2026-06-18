@@ -31,6 +31,7 @@ from watchdog.observers import Observer
 
 from parse_analysis import add_project, load_contents, save_contents, update_project_prompts
 from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect
+from notify import notify, notify_error
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
@@ -353,15 +354,21 @@ class APIHandler(BaseHTTPRequestHandler):
                 pid, scene_num = m.group(1), int(m.group(2))
                 dest = _working_dir(pid) / filename
                 dest.write_bytes(video_bytes)
+                completed_page = None
                 with _data_lock:
                     update_scene(pid, scene_num, video_status="done")
                     project = get_project(pid)
                     if project and check_all_videos_done(project):
                         update_project(pid, project_status="complete")
                         log(f"[API] {filename} → working/ | {pid} COMPLETE ({len(video_bytes)//1024} KB)")
+                        completed_page = project.get("page", "?")
                     else:
                         update_project(pid, project_status="videos_in_progress")
                         log(f"[API] {filename} → working/ | scene {scene_num:02d} done ({len(video_bytes)//1024} KB)")
+                # Notify AFTER releasing the lock so a slow Telegram call can't
+                # stall other parallel slots' contents.json writes.
+                if completed_page is not None:
+                    notify(f"🎬 Videos complete: {pid} ({completed_page}) — ready to archive")
                 self.send_response(200); self._cors(); self.end_headers()
                 self.wfile.write(b'{"ok":true}')
                 return
@@ -520,6 +527,7 @@ class BriefHandler(FileSystemEventHandler):
             # Brief stays in briefs/ — archive command moves it when done
         except Exception as e:
             log(f"ERROR parsing {path.name}: {e}")
+            notify_error(f"brief parse {path.name} ({self.page_name})", e)
 
 
 class DownloadsHandler(FileSystemEventHandler):
@@ -596,6 +604,7 @@ class DownloadsHandler(FileSystemEventHandler):
     def _handle_video(self, path, project_id, scene_num):
         dest = _working_dir(project_id) / path.name
         shutil.move(str(path), str(dest))
+        completed_page = None
         with _data_lock:
             update_scene(project_id, scene_num, video_status="done")
             log(f"{path.name} → working/ | scene {scene_num:02d} video done")
@@ -603,8 +612,12 @@ class DownloadsHandler(FileSystemEventHandler):
             if project and check_all_videos_done(project):
                 update_project(project_id, project_status="complete")
                 log(f"{project_id} COMPLETE — run: py bot.py archive {project_id}")
+                completed_page = project.get("page", "?")
             else:
                 update_project(project_id, project_status="videos_in_progress")
+        # Notify outside the lock — keep contents.json writes fast under load.
+        if completed_page is not None:
+            notify(f"🎬 Videos complete: {project_id} ({completed_page}) — ready to archive")
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
