@@ -151,7 +151,12 @@ async def ensure_logged_in_flow(context: BrowserContext) -> Page:
 # ── Flow UI helpers ───────────────────────────────────────────────────────────
 
 async def click_new_project(page: Page):
-    """Click the '+ โปรเจกต์ใหม่' button on the Flow home page."""
+    """Click the '+ โปรเจกต์ใหม่' button on the Flow home page.
+
+    The Flow home grid can take a while to render, so instead of one shot we poll
+    for up to ~45s and reload once midway. This makes the step reliable rather
+    than failing intermittently when the page is slow (the old one-try version
+    aborted the whole reel if the button was not yet on screen)."""
     candidates = [
         "button:has-text('โปรเจกต์ใหม่')",
         "button:has-text('โปรเจ็กต์ใหม่')",
@@ -161,27 +166,55 @@ async def click_new_project(page: Page):
         "[role='button']:has-text('New project')",
         "a:has-text('New project')",
     ]
-    for sel in candidates:
-        loc = page.locator(sel).first
-        if await loc.count() and await loc.is_visible():
-            await loc.click()
-            await page.wait_for_timeout(2500)
-            log("Clicked: New project / โปรเจกต์ใหม่")
-            return
 
-    # Broad text search fallback
-    btns = page.locator("button, [role='button'], a")
-    n = await btns.count()
-    for i in range(n):
-        b = btns.nth(i)
-        txt = (await b.text_content() or "").strip()
-        if "โปรเจ" in txt or txt in ("New project", "New Project"):
-            await b.click()
-            await page.wait_for_timeout(2500)
-            log(f"Clicked: '{txt}'")
-            return
+    async def _try_click() -> bool:
+        for sel in candidates:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() and await loc.is_visible():
+                    await loc.click()
+                    await page.wait_for_timeout(2500)
+                    log("Clicked: New project / โปรเจกต์ใหม่")
+                    return True
+            except Exception:
+                pass
+        # Broad text search fallback
+        try:
+            btns = page.locator("button, [role='button'], a")
+            n = await btns.count()
+            for i in range(n):
+                b = btns.nth(i)
+                txt = (await b.text_content() or "").strip()
+                if "โปรเจ" in txt or txt in ("New project", "New Project"):
+                    await b.click()
+                    await page.wait_for_timeout(2500)
+                    log(f"Clicked: '{txt}'")
+                    return True
+        except Exception:
+            pass
+        return False
 
-    raise RuntimeError("'New project' button not found on Google Flow home")
+    deadline = time.time() + 45
+    reloaded = False
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        if await _try_click():
+            return
+        # Halfway through, reload once in case the home page got stuck mid-load.
+        if not reloaded and time.time() > deadline - 25:
+            log("New project button still missing — reloading Flow home once ...")
+            try:
+                await page.goto(FLOW_URL, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            reloaded = True
+            await page.wait_for_timeout(3000)
+            continue
+        log(f"New project button not visible yet — waiting (attempt {attempt}) ...")
+        await page.wait_for_timeout(3000)
+
+    raise RuntimeError("'New project' button not found on Google Flow home after 45s")
 
 
 async def wait_for_compose_bar(page: Page, timeout: int = 15000):
