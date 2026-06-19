@@ -1,0 +1,9 @@
+{
+  "live": false,
+  "pages": {
+    "3-page-Noble-Handiwork": {
+      "page_id": "REPLACE_WITH_FACEBOOK_PAGE_ID",
+      "token": "REPLACE_WITH_LONG_LIVED_PAGE_TOKEN"
+    }
+  }
+}

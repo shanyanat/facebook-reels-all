@@ -32,3 +32,4 @@ notify_config.json
 secrets.json
 *.secrets.json
 .env
+uploader/config.json
