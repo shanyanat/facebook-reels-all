@@ -74,6 +74,7 @@ def main():
     ap.add_argument("--live", action="store_true",
                     help="actually post (also requires \"live\": true in config.json)")
     ap.add_argument("--page", help="only this page folder (e.g. 3-page-Noble-Handiwork)")
+    ap.add_argument("--reel", help="only this reel id (e.g. reel_0221) — for a careful single post")
     args = ap.parse_args()
 
     cfg = _load_config()
@@ -97,11 +98,13 @@ def main():
         for reel_dir in sorted(page_dir.iterdir()):
             if not reel_dir.is_dir() or not reel_dir.name.startswith("reel_"):
                 continue
+            reel_id = reel_dir.name
+            if args.reel and reel_id != args.reel:
+                continue                       # single-reel mode: skip the rest
             edited = sorted(reel_dir.glob("EDITED_*.mp4"))
             if not edited:
                 continue                       # not finished editing yet
             found += 1
-            reel_id = reel_dir.name
 
             if (reel_dir / ".uploaded").exists():
                 log(f"skip {reel_id} ({page}) — already uploaded")
