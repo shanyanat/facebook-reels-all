@@ -12,6 +12,7 @@ Requires Chrome running with --remote-debugging-port=9222.
 import argparse
 import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -608,6 +609,8 @@ def _run_editor_batch(page: str, notify) -> bool:
             [sys.executable, str(EDITOR_MAIN), "--batch", str(complete_page)],
             cwd=str(EDITOR_DIR),
             timeout=3 * 3600,   # generous: many reels × FFmpeg renders
+            # Force UTF-8 in the child so its ✓/— prints don't crash on a cp874 console.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except Exception as e:
         print(f"  [edit] ERROR launching editor: {e}")
@@ -617,6 +620,48 @@ def _run_editor_batch(page: str, notify) -> bool:
         notify(f"⚠️ Ai Auto Editor exited with code {result.returncode} for {page}")
         return False
     return True
+
+
+def do_force_complete(project_id: str):
+    """Finish a reel NOW with whatever clips exist — no minimum.
+
+    The auto-advance (and the normal pipeline) only push a reel forward when ALL
+    its videos are done. This is the manual override for when an external tool
+    (Veo/ChatGPT) just won't produce every clip and you decide the finished ones
+    are good enough: it runs the full downstream — archive (moves whatever
+    -vdo.mp4 clips are on disk) -> collect -> edit — exactly like a complete reel.
+
+    This is the backend action the dashboard's "accept partial" button will call.
+    """
+    from notify import notify
+    contents = load_contents()
+    project = next((p for p in contents if p["id"] == project_id), None)
+    if not project:
+        sys.exit(f"Project '{project_id}' not found in contents.json")
+    page = project.get("page")
+    if not page:
+        sys.exit(f"Project '{project_id}' has no 'page' field")
+
+    # Count finished clips just for the log (no gate — we proceed regardless).
+    working_dir = PAGES_DIR / page / "working"
+    total = project.get("total_scenes", 0)
+    have = sum(
+        1 for n in range(1, total + 1)
+        if (working_dir / f"{project_id}-scene-{str(n).zfill(2)}-vdo.mp4").exists()
+    )
+    print(f"Force-completing {project_id} with {have}/{total} clip(s) on disk ...")
+
+    do_archive(project_id)
+    do_collect()
+    ok = _run_editor_batch(page, notify)
+
+    if ok:
+        print(f"\nForce-complete done — {project_id} archived + edited "
+              f"({have}/{total} clips). Ready for upload.")
+        notify(f"✅ Force-completed {project_id} ({page}) with {have}/{total} clips — ready for upload")
+    else:
+        print(f"\n{project_id} archived ({have}/{total} clips) but the edit step had "
+              f"issues — check the Ai Auto Editor output above.")
 
 
 def do_pipeline(page: str):
@@ -768,7 +813,18 @@ def do_pipeline(page: str):
           f"{len(edited)} edited\n{'='*60}")
 
 
+def _force_utf8_console():
+    """Make stdout/stderr tolerate ✓/— and emoji on legacy consoles (e.g. cp874),
+    so a print can never crash the bot. Best-effort; harmless if unsupported."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main():
+    _force_utf8_console()
     parser = argparse.ArgumentParser(
         description="FB Reels Automation Bot — Playwright/terminal approach",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -782,7 +838,7 @@ Examples:
   py bot.py archive reel_0001
         """,
     )
-    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup", "pipeline"])
+    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup", "pipeline", "force-complete"])
     parser.add_argument("project_id", nargs="?", help="reel_0001, page name, 'all' for pipeline, old page name for renamepage, or 'apply' for reconcile/prune")
     parser.add_argument("new_name", nargs="?", help="new page name (renamepage only)")
     args = parser.parse_args()
@@ -845,6 +901,12 @@ Examples:
         if not args.project_id:
             sys.exit("Usage: py bot.py pipeline <page>   (or 'all' for every page)")
         do_pipeline(args.project_id)
+        return
+
+    if args.command == "force-complete":
+        if not args.project_id:
+            sys.exit("Usage: py bot.py force-complete reel_0001")
+        do_force_complete(args.project_id)
         return
 
     project = pick_project(args.project_id)

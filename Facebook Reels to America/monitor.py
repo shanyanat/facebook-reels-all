@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -30,7 +31,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from parse_analysis import add_project, load_contents, save_contents, update_project_prompts
-from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect
+from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect, _run_editor_batch
 from notify import notify, notify_error
 
 BASE_DIR = Path(__file__).parent
@@ -50,9 +51,64 @@ API_PORT = 7788
 # and so bot-function calls (which also mutate contents.json) serialise too.
 _data_lock = threading.RLock()
 
+# Reels currently being auto-advanced (archive→edit), so a duplicate completion
+# event can't start the heavy downstream twice for the same reel.
+_advancing = set()
+
+# Serialises the heavy edit step across auto-advance threads. With several parallel
+# extension slots, multiple reels can finish at once; without this they would spawn
+# several FFmpeg/Gemini editors simultaneously and thrash the CPU. Reels still
+# archive promptly — only the editing queues, one at a time.
+_editor_lock = threading.Lock()
+
 
 def log(msg):
     print(f"[monitor] {msg}", flush=True)
+
+
+def _auto_advance(project_id: str, page: str):
+    """Primary-path automation: the extension finished a reel (all videos saved),
+    so push it through the same downstream the terminal pipeline uses —
+    archive → collect → edit — with NO further manual steps.
+
+    Runs in a background thread (started from the completion handlers) so the heavy
+    FFmpeg/Gemini edit never blocks the HTTP server the extension's parallel slots
+    rely on. The contents.json + file moves (archive/collect) are done under
+    _data_lock so they don't race other slots' saves; the editor runs OUTSIDE the
+    lock. A 9/10 (partial) reel never reaches 'complete', so it never lands here —
+    that case waits for a human (py bot.py force-complete / the dashboard button)."""
+    with _data_lock:
+        if project_id in _advancing:
+            return
+        _advancing.add(project_id)
+    try:
+        log(f"Auto-advance {project_id}: archive + collect ...")
+        with _data_lock:
+            do_archive(project_id)
+            do_collect()
+        log(f"Auto-advance {project_id}: editing (background, queued) ...")
+        with _editor_lock:   # one editor at a time — avoid CPU thrash on parallel finishes
+            ok = _run_editor_batch(page, notify)
+        if ok:
+            notify(f"✅ Auto-advanced {project_id} ({page}): archived + edited — ready for upload")
+        else:
+            notify(f"⚠️ {project_id} ({page}): archived but edit step had issues — check monitor logs")
+    except Exception as e:
+        log(f"Auto-advance {project_id} ERROR: {e}")
+        notify_error(f"auto-advance {project_id} ({page})", e)
+    finally:
+        with _data_lock:
+            _advancing.discard(project_id)
+
+
+def _start_auto_advance(project_id: str, page: str):
+    """Fire _auto_advance on a daemon thread so the HTTP response returns immediately.
+    Kill-switch: set REELS_AUTO_ADVANCE=0 to disable (reels then wait for a manual
+    `py bot.py archive`/`force-complete`)."""
+    if os.environ.get("REELS_AUTO_ADVANCE", "1") == "0":
+        log(f"Auto-advance disabled (REELS_AUTO_ADVANCE=0) — {project_id} left for manual archive")
+        return
+    threading.Thread(target=_auto_advance, args=(project_id, page), daemon=True).start()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -368,7 +424,8 @@ class APIHandler(BaseHTTPRequestHandler):
                 # Notify AFTER releasing the lock so a slow Telegram call can't
                 # stall other parallel slots' contents.json writes.
                 if completed_page is not None:
-                    notify(f"🎬 Videos complete: {pid} ({completed_page}) — ready to archive")
+                    notify(f"🎬 Videos complete: {pid} ({completed_page}) — auto-advancing")
+                    _start_auto_advance(pid, completed_page)
                 self.send_response(200); self._cors(); self.end_headers()
                 self.wfile.write(b'{"ok":true}')
                 return
@@ -617,12 +674,21 @@ class DownloadsHandler(FileSystemEventHandler):
                 update_project(project_id, project_status="videos_in_progress")
         # Notify outside the lock — keep contents.json writes fast under load.
         if completed_page is not None:
-            notify(f"🎬 Videos complete: {project_id} ({completed_page}) — ready to archive")
+            notify(f"🎬 Videos complete: {project_id} ({completed_page}) — auto-advancing")
+            _start_auto_advance(project_id, completed_page)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    # Tolerate ✓/—/emoji in prints on legacy consoles (cp874) so a log line — or
+    # do_collect/do_archive output from an auto-advance thread — can never crash.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     for d in [PAGES_DIR]:
         d.mkdir(parents=True, exist_ok=True)
 
