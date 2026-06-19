@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -52,6 +53,27 @@ def _load_config() -> dict:
     except (json.JSONDecodeError, OSError) as e:
         log(f"WARNING: could not read config.json ({e}) — treating as empty")
         return {"live": False, "pages": {}}
+
+
+def page_hashtag(page_folder: str) -> str:
+    """Turn a page FOLDER name into the page's hashtag.
+    '3-page-Noble-Handiwork' -> '#NobleHandiwork' (drop the 'N-page-' prefix,
+    then remove spaces/hyphens so the words join into one tag)."""
+    name = re.sub(r"^\d+-page-", "", page_folder)      # 'Noble-Handiwork'
+    name = re.sub(r"[^0-9A-Za-z]", "", name)           # 'NobleHandiwork'
+    return f"#{name}" if name else ""
+
+
+def apply_page_hashtag(caption: str, page_folder: str) -> str:
+    """Replace the Master Prompt's page-name placeholder hashtag with the real one.
+    Handles the Thai '#[ชื่อเพจ]' / any '#[...]' bracketed placeholder, plus the
+    English '#YourPageName' / '#PageName' variants."""
+    tag = page_hashtag(page_folder)
+    if not tag:
+        return caption
+    out = re.sub(r"#\[[^\]\n]*\]", tag, caption)                       # #[ชื่อเพจ], #[page name]
+    out = re.sub(r"#YourPageName\b|#PageName\b", tag, out, flags=re.IGNORECASE)
+    return out
 
 
 def _caption_for(reel_id: str) -> str:
@@ -111,7 +133,7 @@ def main():
                 skipped += 1
                 continue
 
-            caption = _caption_for(reel_id)
+            caption = apply_page_hashtag(_caption_for(reel_id), page)
             thumb = reel_dir / "thumbnail.png"
             thumb = thumb if thumb.exists() else None
             page_cfg = pages_cfg.get(page)

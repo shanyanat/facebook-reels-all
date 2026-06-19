@@ -54,10 +54,14 @@ def _post_form(url: str, fields: dict, timeout: int = 60) -> dict:
 def _try_set_cover(video_id: str, token: str, thumbnail_path: Path, log) -> None:
     """Best-effort custom cover. Wrapped so a failure never breaks a successful post."""
     try:
-        # multipart/form-data with the image as `source`
+        # multipart/form-data: is_preferred=true makes this image the actual cover
+        # (not just an extra thumbnail), then the image as `source`.
         boundary = "----reelcover7788"
         img = thumbnail_path.read_bytes()
         head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="is_preferred"\r\n\r\n'
+            f"true\r\n"
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="source"; filename="{thumbnail_path.name}"\r\n'
             f"Content-Type: image/png\r\n\r\n"
