@@ -385,9 +385,13 @@ def update_project_prompts(project_id: str) -> bool:
         return False
 
     # Brief may still be in briefs/ (active) or already moved to ready/ (archived)
+    # The brief may be in briefs/ (active), ready/<reel>/ (archived), or
+    # complete/<page>/<reel>/ (collected) — check all three so updateprompts works
+    # at any stage (e.g. to backfill facebook_caption on an already-finished reel).
     candidates = [
         PAGES_DIR / page / "briefs" / src_txt,
         PAGES_DIR / page / "ready" / project_id / src_txt,
+        BASE_DIR / "complete" / page / project_id / src_txt,
     ]
     txt_path = next((p for p in candidates if p.exists()), None)
     if not txt_path:
