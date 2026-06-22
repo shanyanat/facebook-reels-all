@@ -622,6 +622,82 @@ def _run_editor_batch(page: str, notify) -> bool:
     return True
 
 
+def _facebook_caption(reel_id: str) -> str:
+    """Find a reel's facebook_caption in the live contents.json or the pruned archive."""
+    for proj in load_contents():
+        if proj.get("id") == reel_id:
+            return proj.get("facebook_caption", "") or ""
+    if ARCHIVE_FILE.exists():
+        try:
+            for proj in json.loads(ARCHIVE_FILE.read_text(encoding="utf-8")):
+                if proj.get("id") == reel_id:
+                    return proj.get("facebook_caption", "") or ""
+        except (json.JSONDecodeError, OSError):
+            pass
+    return ""
+
+
+def do_handoff(page_filter: str = None):
+    """Prepare every finished reel for NATIVE posting (Meta Business Suite).
+
+    For each complete/<page>/<reel>/ that has an EDITED_*.mp4, write a `caption.txt`
+    next to it containing the FINAL caption — with the page-name placeholder hashtag
+    already replaced (e.g. #[ชื่อเพจ] -> #NobleHandiwork). The reel folder then holds
+    everything to post by hand: the edited video, thumbnail.png (cover), and
+    caption.txt (copy-paste). We post natively because Graph-API posting tanks reach
+    (see project notes) — this keeps full reach while staying ~95% automated.
+    """
+    sys.path.insert(0, str(BASE_DIR / "uploader"))
+    from caption import apply_page_hashtag
+
+    if not COMPLETE_DIR.exists():
+        print("No complete/ folder yet — generate + edit some reels first.")
+        return
+
+    rows = []   # (page, reel, mp4_name, has_thumb, has_caption)
+    for page_dir in sorted(COMPLETE_DIR.iterdir()):
+        if not page_dir.is_dir():
+            continue
+        page = page_dir.name
+        if page_filter and page != page_filter:
+            continue
+        for reel_dir in sorted(page_dir.iterdir()):
+            if not reel_dir.is_dir() or not reel_dir.name.startswith("reel_"):
+                continue
+            edited = sorted(reel_dir.glob("EDITED_*.mp4"))
+            if not edited:
+                continue
+            # Derive the reel id from the EDITED filename (always 'reel_NNNN'),
+            # not the folder name — some legacy folders carry a '.-' suffix that
+            # wouldn't match the contents.json id and would yield an empty caption.
+            m = re.search(r"(reel_\d+)", edited[0].name)
+            reel_id = m.group(1) if m else reel_dir.name
+            caption = apply_page_hashtag(_facebook_caption(reel_id), page)
+            (reel_dir / "caption.txt").write_text(caption, encoding="utf-8")
+            rows.append((page, reel_id, edited[0].name,
+                         (reel_dir / "thumbnail.png").exists(), bool(caption.strip())))
+
+    if not rows:
+        print("No finished reels found in complete/ (need an EDITED_*.mp4).")
+        return
+
+    print(f"{'PAGE':<26} {'REEL':<12} {'COVER':<6} {'CAPTION':<8} VIDEO")
+    print("-" * 78)
+    for page, reel, mp4, thumb, cap in rows:
+        print(f"{page:<26} {reel:<12} {'yes' if thumb else 'NO':<6} "
+              f"{'yes' if cap else 'NO':<8} {mp4}")
+    print("-" * 78)
+    print(f"{len(rows)} reel(s) ready to post natively. Each folder now has: "
+          f"EDITED_*.mp4 + thumbnail.png + caption.txt")
+    missing_cap = [r[1] for r in rows if not r[4]]
+    if missing_cap:
+        print(f"\n{len(missing_cap)} reel(s) have NO caption yet "
+              f"(run: py bot.py updateprompts <reel>): {', '.join(missing_cap[:8])}"
+              + (" ..." if len(missing_cap) > 8 else ""))
+    print(f"\nPost them in Meta Business Suite (native = full reach): upload the "
+          f"EDITED_*.mp4, set thumbnail.png as cover, paste caption.txt.")
+
+
 def do_force_complete(project_id: str):
     """Finish a reel NOW with whatever clips exist — no minimum.
 
@@ -838,7 +914,7 @@ Examples:
   py bot.py archive reel_0001
         """,
     )
-    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup", "pipeline", "force-complete"])
+    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup", "pipeline", "force-complete", "handoff"])
     parser.add_argument("project_id", nargs="?", help="reel_0001, page name, 'all' for pipeline, old page name for renamepage, or 'apply' for reconcile/prune")
     parser.add_argument("new_name", nargs="?", help="new page name (renamepage only)")
     args = parser.parse_args()
@@ -907,6 +983,10 @@ Examples:
         if not args.project_id:
             sys.exit("Usage: py bot.py force-complete reel_0001")
         do_force_complete(args.project_id)
+        return
+
+    if args.command == "handoff":
+        do_handoff(page_filter=args.project_id)   # optional page name
         return
 
     project = pick_project(args.project_id)
