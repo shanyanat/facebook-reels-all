@@ -388,6 +388,8 @@ def update_project_prompts(project_id: str) -> bool:
     # The brief may be in briefs/ (active), ready/<reel>/ (archived), or
     # complete/<page>/<reel>/ (collected) — check all three so updateprompts works
     # at any stage (e.g. to backfill facebook_caption on an already-finished reel).
+    # NOTE: we deliberately do NOT search folders ending in '.-' — that suffix is
+    # the user's "already posted to the page" marker and is strictly off-limits.
     candidates = [
         PAGES_DIR / page / "briefs" / src_txt,
         PAGES_DIR / page / "ready" / project_id / src_txt,

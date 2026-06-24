@@ -99,6 +99,8 @@ def main():
         for reel_dir in sorted(page_dir.iterdir()):
             if not reel_dir.is_dir() or not reel_dir.name.startswith("reel_"):
                 continue
+            if reel_dir.name.endswith(".-"):
+                continue   # user's "already posted" marker — off-limits
             reel_id = reel_dir.name
             if args.reel and reel_id != args.reel:
                 continue                       # single-reel mode: skip the rest

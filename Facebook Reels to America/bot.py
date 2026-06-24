@@ -476,6 +476,8 @@ def do_cleanup(apply: bool = False):
         for reel_dir in sorted(page_dir.iterdir()):
             if not reel_dir.is_dir() or not reel_dir.name.startswith("reel_"):
                 continue
+            if _is_posted_folder(reel_dir):
+                continue   # already posted ('.-') — off-limits, never delete
             if not (reel_dir / ".uploaded").exists():
                 continue   # not confirmed-uploaded — leave it fully intact
             if not any(reel_dir.glob("EDITED_*.mp4")):
@@ -637,6 +639,13 @@ def _facebook_caption(reel_id: str) -> str:
     return ""
 
 
+def _is_posted_folder(reel_dir: Path) -> bool:
+    """User convention: a folder name ending in '.-' means the reel is ALREADY
+    posted to the page. These are strictly off-limits — never read, write, move,
+    or delete them. Every scan over complete/ must skip them."""
+    return reel_dir.name.endswith(".-")
+
+
 def _write_caption_txt(reel_dir: Path, page: str, reel_id: str) -> bool:
     """Write caption.txt (final caption with page hashtag) into one finished reel
     folder. Returns True if a non-empty caption was written. Used by both the manual
@@ -658,8 +667,8 @@ def sweep_captions(page: str) -> tuple:
         return 0, 0
     written = missing = 0
     for reel_dir in sorted(page_dir.iterdir()):
-        if not reel_dir.is_dir():
-            continue
+        if not reel_dir.is_dir() or _is_posted_folder(reel_dir):
+            continue   # skip already-posted ('.-') folders — off-limits
         edited = sorted(reel_dir.glob("EDITED_*.mp4"))
         if not edited:
             continue
@@ -700,6 +709,8 @@ def do_handoff(page_filter: str = None):
         for reel_dir in sorted(page_dir.iterdir()):
             if not reel_dir.is_dir() or not reel_dir.name.startswith("reel_"):
                 continue
+            if _is_posted_folder(reel_dir):
+                continue   # already posted ('.-') — off-limits, skip
             edited = sorted(reel_dir.glob("EDITED_*.mp4"))
             if not edited:
                 continue
