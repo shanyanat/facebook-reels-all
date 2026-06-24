@@ -1,0 +1,37 @@
+{
+  "target_width": 1080,
+  "target_height": 1920,
+  "fps": 30,
+  "fit": "pad",
+
+  "speed_factor": 1.4,
+  "source_audio_volume_normal": 1.0,
+  "source_audio_volume_music": 0.0,
+
+  "retry_until_success": true,
+  "max_retry_minutes": 20,
+  "max_retries": 5,
+  "retry_base_delay_sec": 8,
+  "request_delay_sec": 5,
+
+  "music_volume": 0.18,
+  "music_fade_out_sec": 2,
+  "music_trim_leading_silence": true,
+  "join_crossfade_sec": 0,
+
+  "watermark_enabled": false,
+  "watermark_opacity": 0.3,
+  "watermark_fontsize_ratio": 0.03,
+  "watermark_bottom_ratio": 0.20,
+  "watermark_fontfile": "assets/fonts/Lato-Regular.ttf",
+  "watermark_text": "",
+
+  "max_seconds_per_scene": 4.0,
+  "padding_seconds": 0.2,
+  "merge_gap_seconds": 0.3,
+  "min_segment_seconds": 0.15,
+
+  "analysis_fps": 2,
+  "confidence_threshold": 0.45,
+  "model": "gemini-2.5-flash"
+}

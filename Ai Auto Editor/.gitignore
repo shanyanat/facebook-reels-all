@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+
+# Working data — your clips, music, renders and cached detections
+input/*
+music/*
+output/*
+cache/*
+
+# keep the folders themselves
+!input/.gitkeep
+!music/.gitkeep
+!output/.gitkeep
+!cache/.gitkeep
