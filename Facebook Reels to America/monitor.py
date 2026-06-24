@@ -31,7 +31,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from parse_analysis import add_project, load_contents, save_contents, update_project_prompts
-from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect, _run_editor_batch
+from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect, _run_editor_batch, sweep_captions
 from notify import notify, notify_error
 
 BASE_DIR = Path(__file__).parent
@@ -89,8 +89,11 @@ def _auto_advance(project_id: str, page: str):
         log(f"Auto-advance {project_id}: editing (background, queued) ...")
         with _editor_lock:   # one editor at a time — avoid CPU thrash on parallel finishes
             ok = _run_editor_batch(page, notify)
+        # Write caption.txt so the reel folder is instantly ready to post natively
+        # (video + thumbnail.png + caption.txt) — no manual `handoff` step needed.
+        sweep_captions(page)
         if ok:
-            notify(f"✅ Auto-advanced {project_id} ({page}): archived + edited — ready for upload")
+            notify(f"✅ Auto-advanced {project_id} ({page}): archived + edited + caption — ready to post")
         else:
             notify(f"⚠️ {project_id} ({page}): archived but edit step had issues — check monitor logs")
     except Exception as e:

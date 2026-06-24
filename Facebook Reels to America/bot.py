@@ -637,6 +637,41 @@ def _facebook_caption(reel_id: str) -> str:
     return ""
 
 
+def _write_caption_txt(reel_dir: Path, page: str, reel_id: str) -> bool:
+    """Write caption.txt (final caption with page hashtag) into one finished reel
+    folder. Returns True if a non-empty caption was written. Used by both the manual
+    `handoff` command and the automatic completion paths so every finished reel folder
+    ends up ready-to-post (video + thumbnail.png + caption.txt) with no manual step."""
+    sys.path.insert(0, str(BASE_DIR / "uploader"))
+    from caption import apply_page_hashtag
+    caption = apply_page_hashtag(_facebook_caption(reel_id), page)
+    (reel_dir / "caption.txt").write_text(caption, encoding="utf-8")
+    return bool(caption.strip())
+
+
+def sweep_captions(page: str) -> tuple:
+    """Quietly write caption.txt for every finished reel in complete/<page>/.
+    Returns (written, missing_caption_count). Idempotent — safe to call after every
+    edit. This is the 'handoff' step folded into the automatic flow."""
+    page_dir = COMPLETE_DIR / page
+    if not page_dir.exists():
+        return 0, 0
+    written = missing = 0
+    for reel_dir in sorted(page_dir.iterdir()):
+        if not reel_dir.is_dir():
+            continue
+        edited = sorted(reel_dir.glob("EDITED_*.mp4"))
+        if not edited:
+            continue
+        m = re.search(r"(reel_\d+)", edited[0].name)
+        reel_id = m.group(1) if m else reel_dir.name
+        ok = _write_caption_txt(reel_dir, page, reel_id)
+        written += 1
+        if not ok:
+            missing += 1
+    return written, missing
+
+
 def do_handoff(page_filter: str = None):
     """Prepare every finished reel for NATIVE posting (Meta Business Suite).
 
@@ -646,10 +681,11 @@ def do_handoff(page_filter: str = None):
     everything to post by hand: the edited video, thumbnail.png (cover), and
     caption.txt (copy-paste). We post natively because Graph-API posting tanks reach
     (see project notes) — this keeps full reach while staying ~95% automated.
-    """
-    sys.path.insert(0, str(BASE_DIR / "uploader"))
-    from caption import apply_page_hashtag
 
+    NOTE: the completion paths (auto-advance, pipeline, force-complete) now write
+    caption.txt automatically, so this command is mainly for BATCH/BACKFILL — e.g.
+    after `updateprompts` on old reels, or to (re)generate every bundle at once.
+    """
     if not COMPLETE_DIR.exists():
         print("No complete/ folder yet — generate + edit some reels first.")
         return
@@ -672,10 +708,9 @@ def do_handoff(page_filter: str = None):
             # wouldn't match the contents.json id and would yield an empty caption.
             m = re.search(r"(reel_\d+)", edited[0].name)
             reel_id = m.group(1) if m else reel_dir.name
-            caption = apply_page_hashtag(_facebook_caption(reel_id), page)
-            (reel_dir / "caption.txt").write_text(caption, encoding="utf-8")
+            has_cap = _write_caption_txt(reel_dir, page, reel_id)
             rows.append((page, reel_id, edited[0].name,
-                         (reel_dir / "thumbnail.png").exists(), bool(caption.strip())))
+                         (reel_dir / "thumbnail.png").exists(), has_cap))
 
     if not rows:
         print("No finished reels found in complete/ (need an EDITED_*.mp4).")
@@ -730,6 +765,7 @@ def do_force_complete(project_id: str):
     do_archive(project_id)
     do_collect()
     ok = _run_editor_batch(page, notify)
+    sweep_captions(page)   # write caption.txt so the reel is instantly ready to post
 
     if ok:
         print(f"\nForce-complete done — {project_id} archived + edited "
@@ -875,6 +911,10 @@ def do_pipeline(page: str):
 
     # 7. Auto-edit the whole page (skips reels already rendered).
     edit_ok = _run_editor_batch(page, notify)
+
+    # 8. Write caption.txt for every finished reel — each folder is now ready to
+    #    post natively with no further manual step.
+    sweep_captions(page)
 
     edited = sorted(
         d.name for d in (COMPLETE_DIR / page).iterdir()
