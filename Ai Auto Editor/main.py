@@ -27,7 +27,7 @@ from common import (
     list_clips, list_clips_in, find_music, find_txt, scene_id, scene_number,
     page_name_from_path, load_config,
 )
-from detect import detect_clip
+from detect import detect_clip, detect_hook
 
 ACTION_RE = re.compile(r"^\s*Action\s*[:：]\s*(.+?)\s*$", re.IGNORECASE)
 
@@ -127,6 +127,23 @@ def run(clips, briefs, cfg, cache_dir, music, out_path, dry_run, force, watermar
     else:
         print()
 
+    # ── HOOK: prepend a short AI-picked teaser from the LAST scene ──────────────
+    # The most attention-grabbing moment (the result/reveal) plays first, before
+    # scene 1, then the reel runs scene 1..N as usual (the last scene plays again
+    # in full at the end). Skipped for very short reels or when disabled in config.
+    hook_det = None
+    hook_min_scenes = int(cfg.get("hook_min_scenes", 2))
+    if cfg.get("hook_enabled", True) and len(detections) >= hook_min_scenes:
+        last = detections[-1]
+        try:
+            hook_det = detect_hook(last, cfg, force=force, cache_dir=cache_dir)
+            hs, he = hook_det["segments"][0]
+            print(f"  Hook: {he - hs:.2f}s from {last['scene']} "
+                  f"[{hs:.2f}-{he:.2f}]  ({hook_det['source']}, conf {hook_det['confidence']:.2f})")
+        except Exception as exc:
+            print(f"  ! hook step failed ({str(exc)[:120]}); rendering without a hook")
+            hook_det = None
+
     if dry_run:
         print(f"Dry run only. Check the briefs and ranges above. To override a clip, "
               f"edit its JSON in {cache_dir} then run without --dry-run.")
@@ -134,8 +151,9 @@ def run(clips, briefs, cfg, cache_dir, music, out_path, dry_run, force, watermar
 
     from edit import build_video  # imported here so --dry-run needs no ffmpeg
 
+    render_list = ([hook_det] + detections) if hook_det else detections
     print("Rendering ...")
-    build_video(detections, music, out_path, cfg, watermark_text=watermark)
+    build_video(render_list, music, out_path, cfg, watermark_text=watermark)
     print(f"\nDone -> {out_path}")
     return out_path
 

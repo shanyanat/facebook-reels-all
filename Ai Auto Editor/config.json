@@ -31,6 +31,10 @@
   "merge_gap_seconds": 0.3,
   "min_segment_seconds": 0.15,
 
+  "hook_enabled": true,
+  "hook_max_seconds": 2.5,
+  "hook_min_scenes": 2,
+
   "analysis_fps": 2,
   "confidence_threshold": 0.45,
   "model": "gemini-2.5-flash"

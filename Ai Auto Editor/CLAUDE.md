@@ -46,7 +46,24 @@ FFmpeg 8.1 and ffprobe must be on PATH (they are on this machine). Key in `.env`
 - `main.py` — two modes. `--folder` reads `scene-*.mp4` + the reel `.txt` (`parse_actions_from_txt`
   pulls `Action :` lines, positional brief per clip; a `briefs.csv` in the folder overrides),
   per-folder cache, `EDITED_<name>.mp4` output. Default mode uses `input/` + `briefs.csv`.
-  Both share `run()`: detect → keep-range report → (unless `--dry-run`) render.
+  Both share `run()`: detect → keep-range report → pick opening hook → (unless `--dry-run`) render.
+
+## Opening hook (teaser from the last scene)
+
+To stop the scroll, the final render opens with a short teaser before scene 1:
+`[hook ~2.5s] → scene 1 → … → last scene (full)`. The last scene's footage therefore
+appears twice (once as the hook, once in place). Built in `run()` after detection:
+`detect_hook()` (in `detect.py`) makes ONE extra Gemini call asking for the single most
+scroll-stopping ~`hook_max_seconds` window of the **last** scene, returns a detection-shaped
+dict (`scene:"hook"`) that is prepended to the list passed to `build_video` — so it renders
+through the exact same cut/join/music path, no special-casing in `edit.py`.
+- Cached as `<lastscene>.hook.json` (separate from the scene cache; `reel_fully_detected`
+  ignores it, so it never affects the done check). `--force` re-asks.
+- On API hard-failure it falls back to the **last `hook_max_seconds`** of the clip (the natural
+  reveal) and does NOT cache, so the next run retries the AI pick.
+- Config: `hook_enabled` (default true), `hook_max_seconds` (2.5), `hook_min_scenes` (2 — reels
+  with fewer scenes get no hook). Already-rendered ("done") reels are skipped by batch, so they
+  keep NO hook unless re-run with `--force`; new reels get it automatically.
 
 ## Key invariants / gotchas
 

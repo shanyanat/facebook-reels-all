@@ -68,27 +68,8 @@ def _retry_delay(msg, attempt, base):
     return min(base * (2 ** attempt), 120.0)
 
 
-def _detect_with_gemini(clip_path, brief, duration, cfg):
-    """Upload, call Gemini (with retry on rate limits), return (segs, conf, has_music)."""
-    from google.genai import types
-    from pydantic import BaseModel
-
-    class Segment(BaseModel):
-        start: float
-        end: float
-        reason: str = ""
-
-    class Detection(BaseModel):
-        segments: list[Segment]
-        confidence: float
-        has_music: bool = False
-
-    client = _get_client()
-    base = float(cfg.get("retry_base_delay_sec", 8))
-    until_success = bool(cfg.get("retry_until_success", True))
-    max_retries = int(cfg.get("max_retries", 5))
-    deadline = time.time() + float(cfg.get("max_retry_minutes", 20)) * 60
-
+def _upload_clip(client, clip_path):
+    """Upload a clip to Gemini and wait until it is processed (raises on failure)."""
     uploaded = client.files.upload(file=clip_path)
     waited = 0.0
     while getattr(uploaded.state, "name", str(uploaded.state)) == "PROCESSING":
@@ -99,28 +80,33 @@ def _detect_with_gemini(clip_path, brief, duration, cfg):
             raise RuntimeError(f"Gemini took too long to process {clip_path}")
     if getattr(uploaded.state, "name", str(uploaded.state)) == "FAILED":
         raise RuntimeError(f"Gemini failed to process {clip_path}")
+    return uploaded
 
-    video_part = types.Part(
-        file_data=types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type),
-        video_metadata=types.VideoMetadata(fps=cfg.get("analysis_fps", 1)),
-    )
-    prompt = PROMPT.format(duration=duration, brief=brief,
-                           max_seconds=float(cfg.get("max_seconds_per_scene", 4.0)))
 
-    response = None
+def _generate_with_retry(client, contents, schema, cfg):
+    """Call Gemini, retrying rate-limit/busy errors per cfg. Returns the response.
+
+    Shared by scene detection and hook selection so both honour the same backoff
+    (retry_until_success / max_retries / max_retry_minutes)."""
+    from google.genai import types
+
+    base = float(cfg.get("retry_base_delay_sec", 8))
+    until_success = bool(cfg.get("retry_until_success", True))
+    max_retries = int(cfg.get("max_retries", 5))
+    deadline = time.time() + float(cfg.get("max_retry_minutes", 20)) * 60
+
     attempt = 0
     while True:
         try:
-            response = client.models.generate_content(
+            return client.models.generate_content(
                 model=cfg.get("model", "gemini-2.5-flash"),
-                contents=[video_part, prompt],
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=Detection,
+                    response_schema=schema,
                     temperature=0,
                 ),
             )
-            break
         except Exception as exc:
             msg = str(exc)
             if not any(k in msg for k in RETRYABLE):
@@ -142,6 +128,35 @@ def _detect_with_gemini(clip_path, brief, duration, cfg):
                   f"(attempt {attempt + 1}{cap_note})")
             time.sleep(delay)
             attempt += 1
+
+
+def _video_part(uploaded, cfg):
+    from google.genai import types
+    return types.Part(
+        file_data=types.FileData(file_uri=uploaded.uri, mime_type=uploaded.mime_type),
+        video_metadata=types.VideoMetadata(fps=cfg.get("analysis_fps", 1)),
+    )
+
+
+def _detect_with_gemini(clip_path, brief, duration, cfg):
+    """Upload, call Gemini (with retry on rate limits), return (segs, conf, has_music)."""
+    from pydantic import BaseModel
+
+    class Segment(BaseModel):
+        start: float
+        end: float
+        reason: str = ""
+
+    class Detection(BaseModel):
+        segments: list[Segment]
+        confidence: float
+        has_music: bool = False
+
+    client = _get_client()
+    uploaded = _upload_clip(client, clip_path)
+    prompt = PROMPT.format(duration=duration, brief=brief,
+                           max_seconds=float(cfg.get("max_seconds_per_scene", 4.0)))
+    response = _generate_with_retry(client, [_video_part(uploaded, cfg), prompt], Detection, cfg)
 
     try:
         client.files.delete(name=uploaded.name)
@@ -256,4 +271,115 @@ def detect_clip(clip_path, brief, cfg, force=False, cache_dir=None):
     # Space out API calls to stay under the per-minute rate limit.
     if source != "error-whole-clip":
         time.sleep(float(cfg.get("request_delay_sec", 0)))
+    return result
+
+
+# ── Hook selection (opening teaser from the last scene) ─────────────────────────
+
+HOOK_PROMPT = """You are editing a vertical short-form video. This clip is {duration:.2f} seconds long and is the FINAL scene — it shows the finished result / payoff.
+
+Pick the SINGLE most scroll-stopping moment to use as a {hook_max:.1f}-second teaser placed at the VERY START of the video: the instant that best shows the result, or is the most visually striking / surprising — the frame that makes a viewer stop scrolling.
+
+This scene is supposed to show:
+"{brief}"
+
+Rules:
+- Return ONE window, {hook_max:.1f} seconds or SHORTER, in seconds from the start of THIS clip (between 0 and {duration:.2f}).
+- Pick the peak / reveal / most eye-catching action. Do NOT pick a slow lead-in, idle frames, or camera settling.
+- "confidence" 0..1 = how sure you are this is the strongest hook moment."""
+
+
+def _hook_with_gemini(clip_path, brief, duration, hook_max, cfg):
+    """Ask Gemini for the single best ~hook_max-second teaser window. Returns (start, end, conf)."""
+    from pydantic import BaseModel
+
+    class HookPick(BaseModel):
+        start: float
+        end: float
+        confidence: float = 0.0
+        reason: str = ""
+
+    client = _get_client()
+    uploaded = _upload_clip(client, clip_path)
+    prompt = HOOK_PROMPT.format(duration=duration, brief=brief or "(no brief)", hook_max=hook_max)
+    response = _generate_with_retry(client, [_video_part(uploaded, cfg), prompt], HookPick, cfg)
+
+    try:
+        client.files.delete(name=uploaded.name)
+    except Exception:
+        pass
+
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, HookPick):
+        return float(parsed.start), float(parsed.end), float(parsed.confidence)
+    text = getattr(response, "text", None)
+    if not text:
+        raise RuntimeError("Gemini returned no usable hook (empty/blocked response)")
+    data = json.loads(text)
+    return float(data["start"]), float(data["end"]), float(data.get("confidence", 0.0))
+
+
+def detect_hook(scene_det, cfg, force=False, cache_dir=None):
+    """Pick a short opening-hook window from a scene's clip (used on the LAST scene).
+
+    Returns a detection-shaped dict {scene:'hook', clip_path, segments:[[s,e]], ...}
+    that build_video can render exactly like a normal scene. The AI-picked window is
+    cached as <scene>.hook.json. If the API hard-fails, falls back to the last
+    `hook_max_seconds` of the clip (the natural reveal) and does NOT cache, so the
+    next run retries the AI pick.
+    """
+    cache_dir = cache_dir or CACHE_DIR
+    os.makedirs(cache_dir, exist_ok=True)
+    clip_path = scene_det["clip_path"]
+    base_scene = scene_det.get("scene") or os.path.splitext(os.path.basename(clip_path))[0]
+    duration = float(scene_det.get("duration") or ffprobe_duration(clip_path))
+    has_music = bool(scene_det.get("has_music", False))
+    hook_max = float(cfg.get("hook_max_seconds", 2.5))
+    cache_path = os.path.join(cache_dir, base_scene + ".hook.json")
+
+    if not force and os.path.exists(cache_path):
+        try:
+            cached = json.load(open(cache_path, encoding="utf-8"))
+            if cached.get("source") != "hook-error":
+                return cached
+        except Exception:
+            pass  # corrupt cache — re-detect
+
+    def _result(s, e, conf, source):
+        return {
+            "scene": "hook",
+            "clip_path": clip_path,
+            "from_scene": base_scene,
+            "segments": [[round(max(0.0, s), 3), round(min(duration, e), 3)]],
+            "confidence": round(conf, 3),
+            "has_music": has_music,
+            "duration": round(duration, 3),
+            "source": source,
+        }
+
+    def _fallback(source):
+        # Last hook_max seconds of the clip = the final reveal/result.
+        return _result(max(0.0, duration - hook_max), duration, 0.0, source)
+
+    try:
+        s, e, conf = _hook_with_gemini(clip_path, scene_det.get("brief", ""), duration, hook_max, cfg)
+    except Exception as exc:
+        print(f"  ! hook detection failed for {base_scene} ({str(exc)[:120]}); "
+              f"using last {hook_max:.1f}s as hook (NOT cached - retried next run)")
+        return _fallback("hook-error")   # not cached -> retried next run
+
+    # Clamp + validate the AI pick; fall back to the reveal if it is unusable.
+    # Floor at 1.0s so a pick clamped near the clip end can't become a blink-length hook.
+    s = max(0.0, min(s, duration))
+    e = max(0.0, min(e, duration))
+    if e - s < 1.0:
+        result = _fallback("hook-fallback-lowpick")
+    else:
+        if e - s > hook_max:
+            e = s + hook_max          # trim an over-long pick to the cap
+        result = _result(s, e, conf, "gemini-hook")
+
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    time.sleep(float(cfg.get("request_delay_sec", 0)))
     return result
