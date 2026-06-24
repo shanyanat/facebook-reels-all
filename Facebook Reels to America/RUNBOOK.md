@@ -5,6 +5,27 @@ the computer does the rest, then you post by hand.**
 
 ---
 
+## OLD way vs NEW way (what changed)
+
+**You still use the extension exactly as before to generate.** The change is that the
+manual commands you used to type *after* generating are now AUTOMATIC.
+
+| After the extension finishes a reel's videos | OLD (you typed it) | NEW |
+|---|---|---|
+| Move files to `ready/` | `py bot.py archive reel_XXXX` | ✅ automatic |
+| Collect to `complete/` | `py bot.py collect` | ✅ automatic |
+| Edit the video | ran Ai Auto Editor by hand | ✅ automatic |
+| Get the caption ready | found/wrote it yourself | ✅ automatic (`caption.txt`) |
+
+So you **stop typing `archive`, `collect`, and the editor command.** A finished reel
+auto-appears in `complete/<page>/<reel>/` with video + thumbnail + `caption.txt`, ready
+to post. Posting stays manual (native, to keep reach), and you rename to `.-` after.
+
+The new commands (`handoff`, `pipeline`, `force-complete`, `cleanup`) are NOT part of
+the normal extension flow — see the command table below for when each is actually used.
+
+---
+
 ## The big picture (what is automatic now)
 
 ```
