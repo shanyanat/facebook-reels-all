@@ -68,40 +68,138 @@ def log(msg):
 
 def _auto_advance(project_id: str, page: str):
     """Primary-path automation: the extension finished a reel (all videos saved),
-    so push it through the same downstream the terminal pipeline uses —
-    archive → collect → edit — with NO further manual steps.
+    so push it into the editor queue — archive → collect → write caption — with NO
+    further manual steps. It deliberately does NOT edit here: editing is owned by the
+    single editor-queue worker (_editor_queue_worker) so that nothing — not a second
+    auto-advance, not a separate `py bot.py force-complete` process — can ever render
+    the same reel twice (the editor has no cross-process lock).
 
-    Runs in a background thread (started from the completion handlers) so the heavy
-    FFmpeg/Gemini edit never blocks the HTTP server the extension's parallel slots
-    rely on. The contents.json + file moves (archive/collect) are done under
-    _data_lock so they don't race other slots' saves; the editor runs OUTSIDE the
-    lock. A 9/10 (partial) reel never reaches 'complete', so it never lands here —
-    that case waits for a human (py bot.py force-complete / the dashboard button)."""
+    Runs in a background thread (started from the completion handlers) so the file
+    moves never block the HTTP server the extension's parallel slots rely on. The
+    contents.json + file moves (archive/collect) are done under _data_lock so they
+    don't race other slots' saves. A 9/10 (partial) reel never reaches 'complete', so
+    it never lands here — that case waits for a human (`py bot.py force-complete` /
+    the dashboard button), which also just archives + collects and lets this same
+    queue edit it."""
     with _data_lock:
         if project_id in _advancing:
             return
         _advancing.add(project_id)
     try:
-        log(f"Auto-advance {project_id}: archive + collect ...")
+        log(f"Auto-advance {project_id}: archive + collect + caption (editing queued) ...")
         with _data_lock:
             do_archive(project_id)
             do_collect()
-        log(f"Auto-advance {project_id}: editing (background, queued) ...")
-        with _editor_lock:   # one editor at a time — avoid CPU thrash on parallel finishes
-            ok = _run_editor_batch(page, notify)
         # Write caption.txt so the reel folder is instantly ready to post natively
         # (video + thumbnail.png + caption.txt) — no manual `handoff` step needed.
+        # Caption only needs the brief + clips, not the edited mp4, so it's safe here.
         sweep_captions(page)
-        if ok:
-            notify(f"✅ Auto-advanced {project_id} ({page}): archived + edited + caption — ready to post")
-        else:
-            notify(f"⚠️ {project_id} ({page}): archived but edit step had issues — check monitor logs")
+        notify(f"✅ Auto-advanced {project_id} ({page}): archived + caption — editing queued in monitor")
     except Exception as e:
         log(f"Auto-advance {project_id} ERROR: {e}")
         notify_error(f"auto-advance {project_id} ({page})", e)
     finally:
         with _data_lock:
             _advancing.discard(project_id)
+
+
+# ── Editor queue: the ONE place editing runs ────────────────────────────────
+# Editing happens only here, in the monitor process, one batch at a time. Both
+# auto-advance and `py bot.py force-complete` merely archive+collect; this worker
+# scans complete/ and renders every reel that has clips but no EDITED_ output.
+# Single-owner by design: the Ai Auto Editor has no cross-process lock, so running
+# it from two processes (e.g. monitor + a force-complete terminal) could clobber the
+# same render. Keeping it here means there is exactly one editor at any time.
+EDITOR_SCAN_INTERVAL = 30   # seconds between scans of complete/ for unedited reels
+MAX_EDIT_ATTEMPTS = 3       # after this many failed passes, stop retrying a reel
+
+# In-memory per-reel failed-edit counter (keyed by folder path). A reel that still
+# lacks EDITED_ output after an editor pass gets +1; at MAX_EDIT_ATTEMPTS it is
+# marked with a `.editfailed` file and skipped, so a single un-editable reel (e.g.
+# a corrupt clip) can't make the worker relaunch the editor — and spam notifies —
+# every 30s forever. Delete the `.editfailed` file to let it retry.
+_edit_attempts = {}
+
+
+def _reel_needs_edit(reel_dir: Path) -> bool:
+    """A collected reel needs editing if it has scene clips but no EDITED_ output.
+    '.-' folders are the user's 'already posted' marker — strictly off-limits.
+    A reel marked `.editfailed` (gave up after repeated failures) is skipped."""
+    if not reel_dir.is_dir() or reel_dir.name.endswith(".-"):
+        return False
+    if (reel_dir / ".editfailed").exists():
+        return False
+    has_clip = any(
+        f.suffix.lower() == ".mp4" and not f.name.upper().startswith("EDITED_")
+        for f in reel_dir.iterdir()
+    )
+    if not has_clip:
+        return False
+    has_edited = any(
+        f.name.upper().startswith("EDITED_") and f.suffix.lower() == ".mp4"
+        for f in reel_dir.iterdir()
+    )
+    return not has_edited
+
+
+def _pages_needing_edit() -> list:
+    """Pages under complete/ that have at least one reel needing editing."""
+    complete_dir = BASE_DIR / "complete"
+    if not complete_dir.exists():
+        return []
+    pages = []
+    for page_dir in sorted(complete_dir.iterdir()):
+        if not page_dir.is_dir():
+            continue
+        if any(_reel_needs_edit(r) for r in page_dir.iterdir()):
+            pages.append(page_dir.name)
+    return pages
+
+
+def _editor_queue_worker():
+    """Background worker: the sole editor. Every EDITOR_SCAN_INTERVAL seconds it
+    finds pages with unedited reels and runs the batch editor over each (one at a
+    time, under _editor_lock so parallel finishes never thrash the CPU). The editor
+    skips reels already rendered, so re-scanning is cheap and idempotent. After each
+    page it sweeps captions (self-healing) so every finished folder is post-ready."""
+    log("Editor queue worker started — editing is handled here, not by force-complete.")
+    complete_dir = BASE_DIR / "complete"
+    while True:
+        try:
+            for page in _pages_needing_edit():
+                page_dir = complete_dir / page
+                # Snapshot which reels need editing BEFORE the pass, so afterwards we
+                # can tell which ones the editor failed to render (still no EDITED_).
+                before = [r for r in page_dir.iterdir() if _reel_needs_edit(r)]
+                log(f"Editor queue: rendering {len(before)} unedited reel(s) in complete/{page}/ ...")
+                with _editor_lock:   # one editor at a time
+                    ok = _run_editor_batch(page, notify)
+                sweep_captions(page)
+                rendered = [r for r in before if not _reel_needs_edit(r)]
+                for r in rendered:
+                    _edit_attempts.pop(str(r), None)   # success — reset its counter
+                if rendered:
+                    notify(f"✅ Editor queue: complete/{page}/ — {len(rendered)} reel(s) "
+                           f"edited + caption, ready to post")
+                # Reels still un-rendered after the pass: count a failure; give up at the cap.
+                for r in before:
+                    if not _reel_needs_edit(r):
+                        continue
+                    n = _edit_attempts.get(str(r), 0) + 1
+                    _edit_attempts[str(r)] = n
+                    if n >= MAX_EDIT_ATTEMPTS:
+                        try:
+                            (r / ".editfailed").write_text(
+                                f"editor failed {n} times; skipping. delete this file to retry.",
+                                encoding="utf-8")
+                        except OSError:
+                            pass
+                        notify(f"❌ {r.name} ({page}): edit failed {n}x — marked .editfailed "
+                               f"and will be skipped. Check its clips; delete .editfailed to retry.")
+        except Exception as e:
+            log(f"Editor queue worker ERROR: {e}")
+            notify_error("editor queue worker", e)
+        time.sleep(EDITOR_SCAN_INTERVAL)
 
 
 def _start_auto_advance(project_id: str, page: str):
@@ -698,6 +796,10 @@ def main():
     # Start HTTP server in background thread
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
+
+    # Start the single editor-queue worker — the ONLY place reels get edited.
+    editor_thread = threading.Thread(target=_editor_queue_worker, daemon=True)
+    editor_thread.start()
 
     observer = Observer()
 

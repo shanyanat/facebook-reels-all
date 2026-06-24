@@ -79,7 +79,7 @@ That's it. Now generate reels in the extension as usual (3–5 in parallel is fi
 |---|---|---|
 | `py monitor.py` | **Every session** — start it, leave it running | The engine. Makes archive/edit/caption automatic. |
 | `py bot.py status` | Anytime you want to see progress | Shows every reel and what stage it's at. |
-| `py bot.py force-complete reel_XXXX` | A reel got stuck (e.g. 9 of 10 videos) and you accept it | Pushes that reel through (edit + caption) with whatever clips it has. |
+| `py bot.py force-complete reel_XXXX` | A reel got stuck (e.g. 9 of 10 videos) and you accept it | Archives it + writes caption with whatever clips it has. **Does NOT edit** — `monitor.py`'s editor queue renders it next. Safe to run several at once. |
 | `py bot.py cleanup` | After you've posted, to free disk space | Deletes the big raw clips of posted reels (keeps the edited video). |
 | `py bot.py preflight` | Before a big run, optional | Closes leftover Chrome, checks disk space. |
 | `py bot.py updateprompts reel_XXXX` | Only for OLD reels with no caption | Reads the brief again and fills the caption. |
@@ -111,8 +111,10 @@ The video step retries up to 5 times. If it still fails, the reel ends up **part
 - **Your choice:**
   - **Try again:** re-run that reel's videos (extension, or `py bot.py videos reel_XXXX`)
     — it resumes and only makes the missing clip.
-  - **Accept it:** `py bot.py force-complete reel_XXXX` — finishes it with the 9 clips,
-    edits it, writes caption.txt. Now it's ready to post like any other.
+  - **Accept it:** `py bot.py force-complete reel_XXXX` — archives it with the 9 clips
+    and writes caption.txt. It does **not** edit; `monitor.py`'s editor queue picks it
+    up and renders it next (so make sure `monitor.py` is running). You can run
+    `force-complete` on several reels at once — they only move files, no double-editing.
 
 ### 4. Other reels while one fails
 Completely safe. Each reel is independent. The others keep going and finish on their own.

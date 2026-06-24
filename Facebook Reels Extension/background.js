@@ -6,6 +6,11 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => 
 const API = 'http://localhost:7788';
 const STORAGE_KEY = 'reel_gen_state';
 const MAX_SLOT_COUNT = 5;
+// Circuit breaker: if this many slots error in a row WITHOUT any reel succeeding
+// in between, stop auto-refilling and pause the run. This stops a "tab-churn" loop
+// where a systemic problem (ChatGPT rate limit / logged out) makes every refilled
+// tab fail too, silently draining the whole selection. Any success resets the count.
+const ERROR_BREAKER_THRESHOLD = 3;
 
 // ── Desktop notification when a reel finishes ──────────────────────────────────
 // Fires only when every scene video is confirmed on disk (a truly finished reel),
@@ -39,13 +44,20 @@ function defaultState() {
         running: false,
         maxSlots: 2,
         slots: Array.from({ length: MAX_SLOT_COUNT }, (_, i) => freshSlot(i)),
-        selectedIds: []
+        selectedIds: [],
+        consecutiveErrors: 0,   // reset by any success; trips the circuit breaker
+        recentErrors: [],       // [{id, message, at}] — kept so the UI can show failures
+        pausedReason: ''        // set when the breaker pauses the run; '' otherwise
     };
 }
 
 async function loadState() {
     const r = await chrome.storage.local.get(STORAGE_KEY);
     const state = r[STORAGE_KEY] || defaultState();
+    // Backfill fields added after a user's state was first saved.
+    if (typeof state.consecutiveErrors !== 'number') state.consecutiveErrors = 0;
+    if (!Array.isArray(state.recentErrors)) state.recentErrors = [];
+    if (typeof state.pausedReason !== 'string') state.pausedReason = '';
     if (state.slots.length < MAX_SLOT_COUNT) {
         while (state.slots.length < MAX_SLOT_COUNT) {
             state.slots.push(freshSlot(state.slots.length));
@@ -453,6 +465,8 @@ async function handleMessage(msg, sender) {
     if (msg.action === 'start') {
         const state = await loadState();
         state.running = true;
+        state.consecutiveErrors = 0;   // fresh start clears the breaker + pause banner
+        state.pausedReason = '';
         if (msg.maxSlots) state.maxSlots = Math.min(msg.maxSlots, MAX_SLOT_COUNT);
         await saveState(state);
         await fillIdleSlots(state);
@@ -479,6 +493,10 @@ async function handleMessage(msg, sender) {
         const state = await loadState();
         state.selectedIds = msg.ids || [];
         await saveState(state);
+        // If a run is active, newly ticked reels should start in any free slot right
+        // away instead of waiting for the ~24s heartbeat — this is what lets you
+        // top up / restart reels mid-run without stopping the others.
+        if (state.running) await fillIdleSlots(state);
         return;
     }
 
@@ -585,6 +603,7 @@ async function handleMessage(msg, sender) {
 
         await patchProject(slot.projectId, { project_status: 'images_done' }).catch(console.error);
 
+        state.consecutiveErrors = 0;   // a reel made it through — reset the breaker
         slot.phase = 'videos';
         slot.progress = 'Opening Google Flow...';
         await saveState(state);
@@ -627,6 +646,7 @@ async function handleMessage(msg, sender) {
         Object.assign(slot, freshSlot(slot.idx));
         slot.status = 'done';
         slot.progress = allOnDisk ? '✓ Complete' : `⚠ ${missing} video(s) still missing`;
+        state.consecutiveErrors = 0;   // a reel finished — reset the breaker
         await saveState(state);
 
         // Only a truly finished reel (every scene video on disk) fires the notification.
@@ -705,11 +725,52 @@ async function handleMessage(msg, sender) {
     if (msg.action === 'error') {
         const state = await loadState();
         const slot = state.slots.find(s => s.tabId === tabId);
-        if (slot) {
-            slot.status = 'error';
-            slot.progress = `Error: ${msg.message}`;
+        if (!slot) return;
+
+        const failedId = slot.projectId;
+        // Keep the failure visible even though we reuse the slot: record it so the UI
+        // can show "recent errors" (the slot's own progress text gets overwritten when
+        // it refills). The failed reel is NOT re-queued — it stays at its on-disk
+        // progress so you can re-tick it later; this also avoids retrying a doomed reel.
+        state.recentErrors = state.recentErrors || [];
+        state.recentErrors.unshift({ id: failedId, message: msg.message || 'error', at: Date.now() });
+        if (state.recentErrors.length > 10) state.recentErrors.length = 10;
+
+        // Reclaim the slot just like every other terminal outcome (don't leave a dead
+        // tab occupying a slot — that was the bug that wasted slots while you waited).
+        try { await chrome.tabs.remove(slot.tabId); } catch {}
+        Object.assign(slot, freshSlot(slot.idx));
+
+        state.consecutiveErrors = (state.consecutiveErrors || 0) + 1;
+
+        // Circuit breaker: too many errors in a row with no success between them means
+        // something systemic (rate limit / logged out). Stop instead of churning tabs.
+        if (state.consecutiveErrors >= ERROR_BREAKER_THRESHOLD) {
+            state.running = false;
+            state.pausedReason =
+                `Paused after ${state.consecutiveErrors} errors in a row — likely a ChatGPT ` +
+                `rate limit or a logged-out tab. Fix that, then press Start again.`;
+            slot.status = 'idle';
+            slot.progress = '';
             await saveState(state);
+            try {
+                chrome.notifications.create({
+                    type: 'basic',
+                    iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+                    title: 'Reels generation paused',
+                    message: state.pausedReason
+                }, () => void chrome.runtime.lastError);
+            } catch {}
+            return;
         }
+
+        // Otherwise free the slot and pull the next selected reel — no waiting for the
+        // other tabs to finish. (Refills only from reels still in the queue; if none
+        // remain the slot stays idle until you tick more.)
+        slot.status = 'idle';
+        slot.progress = '';
+        await saveState(state);   // persist recentErrors/consecutiveErrors even if nothing refills
+        if (state.running) await fillIdleSlots(state);
         return;
     }
 }

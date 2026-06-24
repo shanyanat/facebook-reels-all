@@ -59,6 +59,27 @@ function renderSlots(state) {
     const container = document.getElementById('slots-container');
     container.innerHTML = '';
 
+    // Circuit-breaker pause banner — shown when too many reels failed in a row.
+    if (state.pausedReason) {
+        const banner = document.createElement('div');
+        banner.className = 'pause-banner';
+        banner.textContent = '⏸ ' + state.pausedReason;
+        container.appendChild(banner);
+    }
+
+    // Recent failures — since an errored slot now refills automatically, this is
+    // where you see which reels failed (and why) so you can re-tick them.
+    if (state.recentErrors && state.recentErrors.length) {
+        const box = document.createElement('div');
+        box.className = 'recent-errors';
+        const items = state.recentErrors.slice(0, 5).map(e =>
+            `<div class="recent-error-line">⚠ ${(e.id || '?')}: ${
+                String(e.message || 'error').replace(/</g,'&lt;').slice(0, 80)}</div>`
+        ).join('');
+        box.innerHTML = `<div class="recent-errors-head">Recent failures (re-tick to retry)</div>${items}`;
+        container.appendChild(box);
+    }
+
     for (let i = 0; i < state.maxSlots; i++) {
         const slot = state.slots[i];
         const card = document.createElement('div');
@@ -177,7 +198,10 @@ async function renderQueue(state) {
     listDiv.innerHTML = show.map(p => {
         const status    = p.disk_status || p.project_status;
         const isRunning = runningIds.has(p.id);
-        const canSelect = SELECTABLE.has(status) && !isRunning && !state.running;
+        // Selectable even while a run is active, so you can top up / restart reels
+        // mid-run without stopping the others (the freed/idle slots pick them up).
+        // Still not selectable if THIS reel is the one currently in a slot.
+        const canSelect = SELECTABLE.has(status) && !isRunning;
         const isChecked = selectedIds.includes(p.id);
         const pillText  = status.replace(/_/g, ' ');
 

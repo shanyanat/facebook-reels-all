@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from parse_analysis import load_contents, save_contents
@@ -359,7 +360,20 @@ def do_collect():
             dest_page.mkdir(parents=True, exist_ok=True)
             dest = dest_page / reel_dir.name
             if dest.exists():
-                print(f"  SKIP  {reel_dir.name} — already in complete/{page_dir.name}/")
+                # Already collected. If the leftover source is empty (e.g. a second
+                # archive recreated an empty ready/<reel>/ after collect), remove it
+                # so it doesn't linger and show as a phantom "archived 0/10" row in
+                # status. If it still holds files, that's a real conflict — keep it.
+                if not any(reel_dir.iterdir()):
+                    try:
+                        reel_dir.rmdir()
+                        print(f"  cleaned empty ready/{reel_dir.name} "
+                              f"(already in complete/{page_dir.name}/)")
+                    except OSError:
+                        pass
+                else:
+                    print(f"  SKIP  {reel_dir.name} — already in complete/{page_dir.name}/ "
+                          f"(source still has files; left in place)")
                 continue
             shutil.move(str(reel_dir), str(dest))
             print(f"  ✓  {page_dir.name} / {reel_dir.name}")
@@ -592,9 +606,54 @@ def do_prune(apply: bool = False):
     print("Run 'py bot.py status' to confirm.")
 
 
+# Cross-process editor lock. The Ai Auto Editor has no internal lock, so two
+# processes rendering the same page at once could clobber each other's output.
+# Editing should already happen in only one place (monitor.py's editor queue), but
+# this guard makes it safe even if a `pipeline` run overlaps a running monitor, or
+# two pipelines are launched. It is a separate concern from contents.json's lock.
+EDITOR_LOCKFILE = BASE_DIR / "data" / "editor.lock"
+_EDITOR_LOCK_STALE = 4 * 3600   # > the 3h editor timeout, so a crashed lock self-clears
+
+
+def _acquire_editor_lock(wait: float = 4 * 3600, poll: float = 5.0):
+    """Best-effort cross-process lock for the editor. Blocks (polling) until the lock
+    is free or `wait` seconds elapse. Returns the lock Path on success, or None on
+    timeout (caller then skips editing and retries later). Auto-clears a stale lock."""
+    EDITOR_LOCKFILE.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + wait
+    while True:
+        # Clear a stale lock left by a crashed editor.
+        try:
+            if EDITOR_LOCKFILE.exists() and \
+               time.time() - EDITOR_LOCKFILE.stat().st_mtime > _EDITOR_LOCK_STALE:
+                EDITOR_LOCKFILE.unlink()
+        except OSError:
+            pass
+        try:
+            fd = os.open(str(EDITOR_LOCKFILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return EDITOR_LOCKFILE
+        except FileExistsError:
+            if time.time() >= deadline:
+                return None
+            time.sleep(poll)
+
+
+def _release_editor_lock(lock):
+    if lock:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
 def _run_editor_batch(page: str, notify) -> bool:
     """Run Ai Auto Editor over complete/<page>/ (all reels, skips already-done ones).
-    Returns True if it ran cleanly (or had nothing to do). Never raises."""
+    Returns True if it ran cleanly (or had nothing to do). Never raises.
+
+    Serialised across processes by a file lock (_acquire_editor_lock) so two editors
+    can never render the same reel at once — see EDITOR_LOCKFILE above."""
     complete_page = COMPLETE_DIR / page
     if not complete_page.exists():
         print(f"  [edit] no complete/{page}/ folder yet — skipping editor")
@@ -604,6 +663,10 @@ def _run_editor_batch(page: str, notify) -> bool:
         print(f"  [edit] {msg}")
         notify(f"⚠️ {msg}")
         return False
+    lock = _acquire_editor_lock()
+    if lock is None:
+        print(f"  [edit] another editor is running (lock held) — skipping {page} this pass")
+        return True   # not an error; the queue worker retries on its next scan
     print(f"  [edit] Ai Auto Editor --batch complete/{page}/ ...")
     try:
         # cwd = editor dir so its `from common import ...`, config.json and .env resolve.
@@ -618,6 +681,8 @@ def _run_editor_batch(page: str, notify) -> bool:
         print(f"  [edit] ERROR launching editor: {e}")
         notify(f"❌ Edit step failed to launch for {page}: {e}")
         return False
+    finally:
+        _release_editor_lock(lock)
     if result.returncode != 0:
         notify(f"⚠️ Ai Auto Editor exited with code {result.returncode} for {page}")
         return False
@@ -646,14 +711,37 @@ def _is_posted_folder(reel_dir: Path) -> bool:
     return reel_dir.name.endswith(".-")
 
 
+def _caption_from_reel_brief(reel_dir: Path) -> str:
+    """Self-heal: extract the Facebook caption straight from the brief .txt sitting
+    in the reel folder. Used when contents.json has an empty facebook_caption (e.g.
+    the reel was queued before caption extraction existed, or the brief was edited
+    after queueing). Returns '' if no brief or no caption section."""
+    from parse_analysis import extract_facebook_caption
+    briefs = [f for f in reel_dir.glob("*.txt") if f.name.lower() != "caption.txt"]
+    if not briefs:
+        return ""
+    try:
+        text = briefs[0].read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    return extract_facebook_caption(text)
+
+
 def _write_caption_txt(reel_dir: Path, page: str, reel_id: str) -> bool:
     """Write caption.txt (final caption with page hashtag) into one finished reel
     folder. Returns True if a non-empty caption was written. Used by both the manual
     `handoff` command and the automatic completion paths so every finished reel folder
-    ends up ready-to-post (video + thumbnail.png + caption.txt) with no manual step."""
+    ends up ready-to-post (video + thumbnail.png + caption.txt) with no manual step.
+
+    Self-healing: if contents.json holds an empty caption for this reel, fall back to
+    extracting it from the brief .txt in the reel folder. This fixes every empty
+    caption.txt regardless of when/how the reel was queued, with no `updateprompts`."""
     sys.path.insert(0, str(BASE_DIR / "uploader"))
     from caption import apply_page_hashtag
-    caption = apply_page_hashtag(_facebook_caption(reel_id), page)
+    raw = _facebook_caption(reel_id)
+    if not raw.strip():
+        raw = _caption_from_reel_brief(reel_dir)   # self-heal from the on-disk brief
+    caption = apply_page_hashtag(raw, page)
     (reel_dir / "caption.txt").write_text(caption, encoding="utf-8")
     return bool(caption.strip())
 
@@ -750,12 +838,19 @@ def do_force_complete(project_id: str):
     The auto-advance (and the normal pipeline) only push a reel forward when ALL
     its videos are done. This is the manual override for when an external tool
     (Veo/ChatGPT) just won't produce every clip and you decide the finished ones
-    are good enough: it runs the full downstream — archive (moves whatever
-    -vdo.mp4 clips are on disk) -> collect -> edit — exactly like a complete reel.
+    are good enough.
+
+    IMPORTANT: this command does NOT edit. It only does archive (moves whatever
+    -vdo.mp4 clips are on disk) -> collect -> write caption.txt. The actual editing
+    is owned by ONE process — the editor queue inside `py monitor.py` — which scans
+    complete/ and renders each unedited reel one at a time. That single-owner design
+    is deliberate: the editor has no cross-process lock, so if force-complete edited
+    too (it runs in its own terminal, separate from monitor) the two could render the
+    same reel at once and clobber each other. Run several `force-complete` commands in
+    parallel safely — they only move files; monitor picks them up for editing.
 
     This is the backend action the dashboard's "accept partial" button will call.
     """
-    from notify import notify
     contents = load_contents()
     project = next((p for p in contents if p["id"] == project_id), None)
     if not project:
@@ -775,16 +870,11 @@ def do_force_complete(project_id: str):
 
     do_archive(project_id)
     do_collect()
-    ok = _run_editor_batch(page, notify)
     sweep_captions(page)   # write caption.txt so the reel is instantly ready to post
 
-    if ok:
-        print(f"\nForce-complete done — {project_id} archived + edited "
-              f"({have}/{total} clips). Ready for upload.")
-        notify(f"✅ Force-completed {project_id} ({page}) with {have}/{total} clips — ready for upload")
-    else:
-        print(f"\n{project_id} archived ({have}/{total} clips) but the edit step had "
-              f"issues — check the Ai Auto Editor output above.")
+    print(f"\nForce-complete done — {project_id} archived + caption written "
+          f"({have}/{total} clips). Editing is handled by the editor queue in "
+          f"`py monitor.py` — make sure it is running; it will render this reel next.")
 
 
 def do_pipeline(page: str):
