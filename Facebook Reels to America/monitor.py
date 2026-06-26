@@ -15,6 +15,7 @@ Note: restart monitor.py after adding a new page folder so it picks up the new b
 
 import base64 as _b64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -144,6 +145,35 @@ def get_project(project_id):
         if p["id"] == project_id:
             return p
     return None
+
+
+def _reference_digests(project_id, working_dir):
+    """SHA-256 hex digests of a project's REFERENCE images (storyboard + character
+    sheet). Used by /save_image to reject a scene image whose bytes are identical
+    to one of them — i.e. an uploaded reference that leaked into the generated-image
+    capture (the storyboard-as-scene-01 / char-sheet-as-scene bug). AI regeneration
+    never produces a byte-identical file, so an EXACT match can only mean a reference
+    was grabbed instead of a real generation. Best-effort: any reference that is
+    missing or unreadable is simply skipped (the storyboard guard is the dominant
+    case and is always available once Phase A has run)."""
+    digests = set()
+    candidates = [working_dir / f"{project_id}-storyboard.png"]
+    proj = get_project(project_id)
+    if proj and proj.get("character_sheet"):
+        cs = BASE_DIR / proj["character_sheet"]
+        if not cs.exists():
+            # The stored path can carry a stale page name (page renamed after the
+            # sheet was uploaded). Fall back to the same filename under the project's
+            # CURRENT page briefs/ folder so a char-sheet leak is still caught.
+            if proj.get("page"):
+                cs = PAGES_DIR / proj["page"] / "briefs" / Path(proj["character_sheet"]).name
+        candidates.append(cs)
+    for f in candidates:
+        try:
+            digests.add(hashlib.sha256(f.read_bytes()).hexdigest())
+        except OSError:
+            pass
+    return digests
 
 
 def update_scene(project_id, scene_num, **kwargs):
@@ -345,7 +375,21 @@ class APIHandler(BaseHTTPRequestHandler):
             m = DownloadsHandler.SCENE_IMG_RE.match(filename)
             if m:
                 pid, scene_num = m.group(1), int(m.group(2))
-                dest = _working_dir(pid) / filename
+                wd = _working_dir(pid)
+                # CONTENT GUARD (DOM-independent backstop): never write an uploaded
+                # reference under a scene name. Both engines capture generated and
+                # uploaded images from the same id=file_ DOM pattern, so a timing slip
+                # can grab the storyboard / character sheet as a "scene". Reject an
+                # EXACT byte match — the scene stays missing and the disk-truth retry
+                # loop re-requests it cleanly. Catches only literal duplicates, so a
+                # genuinely-similar scene is never falsely rejected.
+                if hashlib.sha256(img_bytes).hexdigest() in _reference_digests(pid, wd):
+                    log(f"[API] REJECT {filename}: identical to a reference image "
+                        f"(storyboard/char sheet), not a real scene — left missing for retry.")
+                    self.send_response(409); self._cors(); self.end_headers()
+                    self.wfile.write(b'{"error":"image duplicates a reference (storyboard/char sheet)"}')
+                    return
+                dest = wd / filename
                 dest.write_bytes(img_bytes)
                 with _data_lock:
                     update_scene(pid, scene_num, image_status="done")

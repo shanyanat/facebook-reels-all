@@ -241,9 +241,22 @@ async function waitForGeneration(maxWait = 600) {
     log(`WARNING: Still generating after ${maxWait}s — continuing`);
 }
 
+// A generated image = an `id=file_` <img> that is NOT inside a USER message turn.
+// Uploaded references (storyboard, character sheet) sit in the user turn after the
+// message is sent, so excluding user turns drops them — while still capturing the
+// generated images wherever ChatGPT renders them (assistant turn OR a separate
+// gallery/canvas). Requiring an ASSISTANT-turn ancestor was too strict: image output
+// renders outside the role container, so it matched nothing → "No image generated".
+// This is fail-safe: if user turns aren't tagged it degrades to the original behavior
+// (never wrongly drops a real image); monitor.py's byte-guard backstops scene saves.
+function _generatedImgs() {
+    return [...document.querySelectorAll('img[src*="id=file_"]')]
+        .filter(img => !img.closest('[data-message-author-role="user"]'));
+}
+
 function countGeneratedImages() {
     const ids = new Set();
-    for (const img of document.querySelectorAll('img[src*="id=file_"]')) {
+    for (const img of _generatedImgs()) {
         const m = img.src.match(/id=(file_[^&\s"]+)/);
         if (m) ids.add(m[1]);
     }
@@ -275,8 +288,9 @@ async function pollForImages(expected, baseline, timeout = 120, noProgressWindow
 }
 
 function getGeneratedImageUrls() {
+    // Same user-turn exclusion as countGeneratedImages — see _generatedImgs().
     const seen = new Set(), result = [];
-    for (const img of document.querySelectorAll('img[src*="id=file_"]')) {
+    for (const img of _generatedImgs()) {
         const m = img.src.match(/id=(file_[^&\s"]+)/);
         if (m && !seen.has(m[1])) { seen.add(m[1]); result.push(img.src); }
     }

@@ -836,18 +836,33 @@ async def wait_for_generation(page: Page, max_wait: int = 600):
     await page.wait_for_timeout(1000)
 
 
+# A generated image = an id=file_ <img> that is NOT inside a USER message turn.
+# Uploaded references (storyboard, character sheet) sit in the user turn after the
+# message is sent, so excluding user turns drops them — while still capturing generated
+# images wherever ChatGPT renders them (assistant turn OR a separate gallery/canvas).
+# Requiring an ASSISTANT-turn ancestor was too strict: image output renders outside the
+# role container, so it matched nothing → "No image generated". This is fail-safe: if
+# user turns aren't tagged it degrades to the original behavior (never drops a real
+# image); monitor.py's byte-guard backstops scene saves.
+_GENERATED_IMGS_JS = """
+    [...document.querySelectorAll('img[src*="id=file_"]')]
+        .filter(img => !img.closest('[data-message-author-role="user"]'))
+"""
+
+
 async def count_generated_images(page: Page) -> int:
     """Count UNIQUE generated images by file ID (id=file_ underscore = generated, not uploaded).
     Deduplicates: thumbnail + main view of the same image share one file ID → counted once.
+    Excludes user-turn (uploaded reference) images — see _GENERATED_IMGS_JS.
     """
     return await page.evaluate("""() => {
         const ids = new Set();
-        for (const img of document.querySelectorAll('img[src*="id=file_"]')) {
+        for (const img of %s) {
             const m = img.src.match(/id=(file_[^&\\s"]+)/);
             if (m) ids.add(m[1]);
         }
         return ids.size;
-    }""")
+    }""" % _GENERATED_IMGS_JS)
 
 
 async def poll_for_images(page: Page, expected: int, baseline: int, timeout: int = 120) -> int:
@@ -887,51 +902,31 @@ async def get_generated_image_urls(page: Page) -> list:
         pass
     await page.wait_for_timeout(1000)
 
+    _eval = """() => {
+        const seen = new Set();
+        const result = [];
+        for (const img of %s) {
+            const m = img.src.match(/id=(file_[^&\\s"]+)/);
+            if (m && !seen.has(m[1])) { seen.add(m[1]); result.push(img.src); }
+        }
+        return result;
+    }""" % _GENERATED_IMGS_JS
     try:
-        urls = await page.evaluate("""() => {
-            const seen = new Set();
-            const result = [];
-            for (const img of document.querySelectorAll('img[src*="id=file_"]')) {
-                const m = img.src.match(/id=(file_[^&\\s"]+)/);
-                if (m && !seen.has(m[1])) {
-                    seen.add(m[1]);
-                    result.push(img.src);
-                }
-            }
-            return result;
-        }""")
+        urls = await page.evaluate(_eval)
     except Exception as e:
         log(f"WARNING: get_generated_image_urls evaluate failed ({e}) — retrying after 3s")
         await page.wait_for_timeout(3000)
         try:
-            urls = await page.evaluate("""() => {
-                const seen = new Set();
-                const result = [];
-                for (const img of document.querySelectorAll('img[src*="id=file_"]')) {
-                    const m = img.src.match(/id=(file_[^&\\s"]+)/);
-                    if (m && !seen.has(m[1])) { seen.add(m[1]); result.push(img.src); }
-                }
-                return result;
-            }""")
+            urls = await page.evaluate(_eval)
         except Exception as e2:
             log(f"ERROR: Could not read image URLs: {e2}")
             return []
 
-    if not urls:
-        # Fallback: any large non-UI image
-        try:
-            urls = await page.evaluate("""() => {
-                return [...document.querySelectorAll("img[src^='https']")]
-                    .filter(i =>
-                        (i.naturalWidth || i.width) > 200
-                        && !i.src.includes('avatar')
-                        && !i.src.includes('logo')
-                        && !i.src.includes('icon')
-                    )
-                    .map(i => i.src);
-            }""")
-        except Exception:
-            urls = []
+    # NOTE: no broad "any large image" fallback. The old fallback grabbed every
+    # https img > 200px, which includes the uploaded storyboard / character sheet —
+    # exactly the references the user-turn exclusion drops. If the query is empty we
+    # return empty and let the phase fail loudly (poll reports 0 new), which is visible
+    # and safe, rather than silently saving a reference as a scene.
     return urls
 
 

@@ -265,8 +265,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
                     const r = btn.getBoundingClientRect();
                     if (r.width === 0 || r.height === 0 || r.top < vh * vhFraction) return false;
-                    const t = (btn.textContent || '').trim();
-                    return ['arrow_forward', 'สร้าง', 'ส่ง'].some(k => t.includes(k));
+                    // The Generate/send button carries the "arrow_forward" Material icon (its
+                    // visually-hidden label is "สร้าง"). Do NOT match "สร้าง" alone — a separate
+                    // "add_2 สร้าง" Create button also contains it and was being clicked by
+                    // mistake. Target arrow_forward and exclude any "add" button.
+                    const txt = btn.textContent || '';
+                    if (txt.includes('add')) return false;
+                    const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
+                    return txt.includes('arrow_forward') || txt.includes('ส่ง') || aria.includes('send');
                 });
                 if (!btns.length) return 'no-button';
                 btns.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
@@ -439,8 +445,40 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     return true;
 });
 
+// Press Enter inside the compose editor (main world) — the new Agent compose submits
+// the prompt on Enter, which is the most layout-independent way to start generation
+// when the "→" send button can't be located by selector.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.action === 'fillSlate' || msg.action === 'clickGenerateSlate' || msg.action === 'injectFileUpload') return false; // handled by dedicated listeners above
+    if (msg.action !== 'pressEnterCompose') return false;
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ ok: false, error: 'no tabId' }); return true; }
+    chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: () => {
+            try {
+                const ed = document.querySelector(
+                    '[data-slate-editor="true"], [role="textbox"], [contenteditable="true"], textarea');
+                if (!ed) return 'no-editor';
+                ed.focus();
+                for (const type of ['keydown', 'keypress', 'keyup']) {
+                    ed.dispatchEvent(new KeyboardEvent(type, {
+                        key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+                        bubbles: true, cancelable: true
+                    }));
+                }
+                return 'enter-dispatched';
+            } catch (e) { return 'error:' + e.message; }
+        }
+    }).then(results => {
+        sendResponse({ ok: true, result: results[0]?.result || 'no-result' });
+    }).catch(e => sendResponse({ ok: false, error: e.message }));
+    return true; // async
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === 'fillSlate' || msg.action === 'clickGenerateSlate' ||
+        msg.action === 'injectFileUpload' || msg.action === 'pressEnterCompose') return false; // handled by dedicated listeners above
     (async () => {
         try {
             await handleMessage(msg, sender);

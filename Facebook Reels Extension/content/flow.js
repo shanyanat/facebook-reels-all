@@ -244,37 +244,82 @@ async function dismissAgentPanel() {
     log('NOTE: "Agent" button not found after closing panel — may already be active');
 }
 
-async function clickStartFrameSlot() {
-    // Exact-text match — same logic as original bot.py _try_first_frame_upload
-    const keywords = ['เริ่ม', 'Start', 'เริ่มต้น'];
+function isEnabled(el) {
+    return !!el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+}
+
+// The Flow media browser is "open" when its "อัปโหลดสื่อ / Upload media" button is on
+// screen. This text is stable across BOTH the classic "Start frame" layout and the new
+// Agent "+" layout, so it's our reliable open/closed signal.
+function mediaPanelOpen() {
+    for (const el of document.querySelectorAll('button, [role="button"], a, li')) {
+        const t = (el.textContent || '').trim();
+        if ((t.includes('อัปโหลดสื่อ') || t.includes('Upload media')) && isVisible(el)) return true;
+    }
+    return false;
+}
+
+// The "+" / add-media button lives INSIDE the compose bar. We never page-wide search
+// for "+" (there are many on the page) — we anchor to the compose textbox, walk up to
+// its row container, and take the LEFT-most visible button. Correctness is guaranteed
+// not by this heuristic but by openMediaPanel() verifying the panel actually opened.
+function findComposePlusButton() {
+    const box = findVisible('textarea') || findVisible('[contenteditable="true"]') || findVisible('[role="textbox"]');
+    if (!box) return null;
+    let container = box.parentElement || box;
+    for (let p = box.parentElement; p && p !== document.body; p = p.parentElement) {
+        if ([...p.querySelectorAll('button, [role="button"]')].some(isVisible)) container = p;
+        if (p.getBoundingClientRect().width > window.innerWidth * 0.9) break;  // stop before whole page
+    }
+    const btns = [...container.querySelectorAll('button, [role="button"]')].filter(isVisible);
+    if (!btns.length) return null;
+    btns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    return btns[0];   // left-most button in the compose row = the "+" / add-media
+}
+
+// Open the media browser, trying each known entry point and VERIFYING the panel opened
+// after each click — so a wrong guess self-corrects to the next strategy instead of
+// silently proceeding. Order: classic "Start/เริ่ม" slot (older machines) → compose
+// "+" (new Agent UI) → spatial fallback. Returns true once the panel is confirmed open,
+// which makes the same code work on every device regardless of which layout it shows.
+async function openMediaPanel() {
+    const tryClick = async (el, label) => {
+        if (!isVisible(el)) return false;
+        try { el.scrollIntoView({ block: 'center' }); } catch {}
+        await sleep(200);
+        dispatchPointerClick(el);
+        try { HTMLElement.prototype.click.call(el); } catch {}
+        await sleep(1500);
+        if (mediaPanelOpen()) { log(`Media panel opened via ${label}`); return true; }
+        return false;
+    };
     for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt > 0) await sleep(1000);
-        for (const el of document.querySelectorAll('button, [role="button"], div[class], span[class]')) {
-            if (!isVisible(el)) continue;
-            const txt = (el.textContent || '').trim();
-            if (keywords.includes(txt)) {
-                el.click();
-                log(`Clicked Start frame slot: "${txt}"`);
-                return true;
+        if (mediaPanelOpen()) return true;   // already open
+
+        // 1) classic Start/เริ่ม slot (backup machines that still show it)
+        const startBtn = [...document.querySelectorAll('button, [role="button"], div[class], span[class]')]
+            .find(el => isVisible(el) && ['เริ่ม', 'Start', 'เริ่มต้น'].includes((el.textContent || '').trim()));
+        if (startBtn && await tryClick(startBtn, 'Start slot')) return true;
+
+        // 2) compose-bar "+" (new Agent layout)
+        if (await tryClick(findComposePlusButton(), 'compose "+"')) return true;
+
+        // 3) spatial fallback: element just left of the swap_horiz button
+        const swapBtn = [...document.querySelectorAll('button')]
+            .find(b => (b.textContent || '').includes('swap_horiz'));
+        if (swapBtn) {
+            const sr = swapBtn.getBoundingClientRect();
+            for (const xOff of [100, 70, 140, 50]) {
+                const x = sr.left - xOff;
+                if (x < 50) continue;
+                const el = document.elementFromPoint(x, sr.top + sr.height / 2);
+                if (!el || el === swapBtn || el === document.body) continue;
+                if (await tryClick(el, `spatial offset ${xOff}`)) return true;
             }
         }
     }
-    // Spatial fallback: element to the left of swap_horiz button (mirrors bot.py)
-    const swapBtn = [...document.querySelectorAll('button')]
-        .find(b => (b.textContent || '').includes('swap_horiz'));
-    if (swapBtn) {
-        const sr = swapBtn.getBoundingClientRect();
-        for (const xOff of [100, 70, 140, 50]) {
-            const x = sr.left - xOff;
-            if (x < 50) continue;
-            const el = document.elementFromPoint(x, sr.top + sr.height / 2);
-            if (!el || el === swapBtn || el === document.body) continue;
-            el.click();
-            log(`Clicked Start frame slot via spatial offset ${xOff}`);
-            return true;
-        }
-    }
-    log('WARNING: Start frame slot button not found');
+    log('WARNING: media browser panel did not open (Start / "+" / spatial all failed)');
     return false;
 }
 
@@ -289,13 +334,11 @@ async function waitForUploadComplete(filename, maxWait = 30000) {
     const beforeSrcs = new Set([...document.querySelectorAll('img')].map(i => i.src).filter(Boolean));
 
     while (Date.now() < end) {
-        // Done: Add to Prompt is visible (file was selected successfully)
-        for (const el of document.querySelectorAll('button, [role="button"]')) {
-            const t = (el.textContent || '').trim();
-            if ((t.includes('เพิ่มไปยังพรอมต์') || t.includes('Add to prompt')) && isVisible(el)) {
-                log('Upload complete — Add to Prompt visible');
-                return;
-            }
+        // Done only when Add to Prompt is ENABLED — proves the selected file finished
+        // uploading (not the still-uploading 47% copy, which leaves the button greyed).
+        if (findAddToPromptBtn()) {
+            log('Upload complete — Add to Prompt enabled');
+            return;
         }
 
         // Strategy 1: find element whose OWN text = filename (leaf text node),
@@ -361,36 +404,54 @@ async function waitForUploadComplete(filename, maxWait = 30000) {
 }
 
 function findAddToPromptBtn() {
+    // Return "Add to Prompt" ONLY when it is ENABLED. Flow greys it out (disabled)
+    // while the selected media is still uploading; clicking the greyed button does
+    // nothing — that was the real cause of the "could not close panel" loop, where the
+    // bot had selected the still-uploading (47%) copy.
     const keywords = ['เพิ่มไปยังพรอมต์', 'Add to prompt'];
     for (const el of document.querySelectorAll('button, [role="button"]')) {
         const t = (el.textContent || '').trim();
-        if (keywords.some(k => t.includes(k)) && isVisible(el)) return el;
+        if (keywords.some(k => t.includes(k)) && isVisible(el) && isEnabled(el)) return el;
     }
     return null;
 }
 
-async function clickAddToPrompt() {
-    for (let attempt = 0; attempt < 10; attempt++) {
-        if (attempt > 0) await sleep(800);
-        const el = findAddToPromptBtn();
-        if (!el) continue;
+// Same button regardless of enabled/disabled — used only to tell whether the media
+// panel is still open (the button disappears once the image is added to the prompt).
+function addToPromptVisible() {
+    const keywords = ['เพิ่มไปยังพรอมต์', 'Add to prompt'];
+    for (const el of document.querySelectorAll('button, [role="button"]')) {
+        const t = (el.textContent || '').trim();
+        if (keywords.some(k => t.includes(k)) && isVisible(el)) return true;
+    }
+    return false;
+}
 
-        // Ensure element is in viewport
+async function clickAddToPrompt() {
+    // Step 1: wait (up to ~60s) for the button to become ENABLED — i.e. the selected
+    // media finished uploading. This is what stops the bot clicking the greyed button.
+    let el = null;
+    for (let i = 0; i < 60 && !el; i++) {
+        el = findAddToPromptBtn();
+        if (!el) await sleep(1000);
+    }
+    if (!el) {
+        log('WARNING: Add to Prompt never became enabled — upload not ready in time');
+        return false;
+    }
+
+    // Step 2: click it, then verify the panel actually closed (button gone).
+    for (let attempt = 0; attempt < 10; attempt++) {
+        if (attempt > 0) { await sleep(800); el = findAddToPromptBtn() || el; }
         el.scrollIntoView({ block: 'center', inline: 'center' });
         await sleep(200);
-
-        // Focus first (some frameworks require focus before click)
         try { el.focus(); } catch {}
         await sleep(100);
-
-        // Fire full pointer+mouse event chain, then native click
         dispatchPointerClick(el);
         try { HTMLElement.prototype.click.call(el); } catch {}
-
         await sleep(1500);
 
-        // Verify panel closed — "Add to Prompt" button should be gone
-        if (!findAddToPromptBtn()) {
+        if (!addToPromptVisible()) {
             log(`Clicked: เพิ่มไปยังพรอมต์ (confirmed closed, attempt ${attempt + 1})`);
             return true;
         }
@@ -404,10 +465,13 @@ async function uploadSceneImage(blob, filename) {
     log(`Uploading: ${filename}...`);
     const file = new File([blob], filename, { type: 'image/png' });
 
-    // Step 1: Click "เริ่ม/Start" — opens the media browser panel
-    log('Step 1: Clicking Start frame slot...');
-    await clickStartFrameSlot();
-    await jitter(2500, 2500); // 2.5–5s: media browser opening (extra time for slow connections)
+    // Step 1: Open the media browser — classic "Start" slot OR new compose "+",
+    // verified by panel-open detection so it works on any device/layout.
+    log('Step 1: Opening media browser...');
+    if (!await openMediaPanel()) {
+        throw new Error('SELECTOR: media browser panel did not open (Start / "+" not found)');
+    }
+    await jitter(1500, 1500); // settle after panel opens
 
     // Step 2: Find "อัปโหลดสื่อ/Upload media" button, then click it while intercepting
     // the file input's .click() call so the native OS dialog never opens.
@@ -447,7 +511,7 @@ async function uploadSceneImage(blob, filename) {
         catch {}
         capturedInput = document.querySelector("input[type='file']");
     }
-    if (!capturedInput) throw new Error('File input not found — cannot upload image');
+    if (!capturedInput) throw new Error('SELECTOR: File input not found — cannot upload image');
 
     // Step 3: Inject file (equivalent to user selecting it through the file dialog)
     log(`Step 3: Injecting file: ${filename}`);
@@ -465,7 +529,7 @@ async function uploadSceneImage(blob, filename) {
     // Step 5: Click "เพิ่มไปยังพรอมต์/Add to Prompt"
     log('Step 5: Clicking Add to Prompt...');
     const added = await clickAddToPrompt();
-    if (!added) throw new Error('Add to Prompt button not found after upload');
+    if (!added) throw new Error('SELECTOR: Add to Prompt did not become available after upload');
     log(`✓ Image attached to prompt: ${filename}`);
 }
 
@@ -516,68 +580,49 @@ async function fillVideoPrompt(text) {
     log('WARNING: Prompt input not found — compose bar may not be ready');
 }
 
+// The Generate/send button carries the "arrow_forward" Material icon (its visually-
+// hidden label is "สร้าง"). We target arrow_forward SPECIFICALLY — matching "สร้าง"
+// alone wrongly hit the separate "add_2 สร้าง" Create button, which is what caused the
+// stray clicks. Exclude any "add" button to be safe.
+function findGenerateButton() {
+    const vh = window.innerHeight;
+    const cands = [...document.querySelectorAll('button, [role="button"]')].filter(b => {
+        if (!isVisible(b) || !isEnabled(b)) return false;
+        if (b.getBoundingClientRect().top < vh * 0.3) return false;
+        const txt = b.textContent || '';
+        if (txt.includes('add')) return false;   // exclude the "add_2 สร้าง" Create button
+        return txt.includes('arrow_forward') || txt.includes('ส่ง') ||
+               (b.getAttribute('aria-label') || '').toLowerCase().includes('send');
+    });
+    cands.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+    return cands[0] || null;
+}
+
 async function clickGenerate() {
-    // Primary: click the arrow_forward/สร้าง button via main-world executeScript.
-    // btn.click() in MAIN world fires React's real onClick (reads Slate internal state).
+    // Primary: main-world React onClick on the arrow_forward button (fires Slate state).
+    // After it clicks, waitForVideoReady() is what detects success/failure — same as the
+    // original, working design. No verify-cascade, no Enter: one precise click only.
     const resp = await chrome.runtime.sendMessage({ action: 'clickGenerateSlate' }).catch(() => null);
     if (resp?.ok) {
         await jitter(1000, 1500); // 1–2.5s: settle after button click
         log(`Generate: ${resp.result}`);
         return;
     }
-    log(`Generate main-world failed (${resp?.result || resp?.error}) — trying fallbacks`);
+    log(`Generate main-world: ${resp?.result || resp?.error} — content-script fallback`);
 
-    const vh = window.innerHeight;
-
-    // Fallback A: dispatchPointerClick on arrow_forward / สร้าง button
-    for (const btn of [...document.querySelectorAll('button, [role="button"]')].reverse()) {
-        if (!isVisible(btn) || btn.disabled) continue;
-        const r = btn.getBoundingClientRect();
-        if (r.top < vh * 0.3) continue;
-        const t = (btn.textContent || '').trim();
-        if (['arrow_forward', 'สร้าง', 'ส่ง'].some(k => t.includes(k))) {
-            dispatchPointerClick(btn);
-            try { HTMLElement.prototype.click.call(btn); } catch {}
-            await sleep(1000);
-            log(`Generate: fallback button click (${t.substring(0, 20)})`);
-            return;
-        }
+    // Fallback: click the arrow_forward button directly (precise; excludes "add_2 สร้าง").
+    const btn = findGenerateButton();
+    if (btn) {
+        try { btn.scrollIntoView({ block: 'center' }); } catch {}
+        await sleep(150);
+        dispatchPointerClick(btn);
+        try { HTMLElement.prototype.click.call(btn); } catch {}
+        await jitter(1000, 1500);
+        log('Generate: content-script arrow_forward click');
+        return;
     }
 
-    // Fallback B: rightmost button beside the compose input
-    const inputRect = (() => {
-        for (const sel of ['[data-slate-editor="true"]', '[role="textbox"]',
-                           'textarea', '[contenteditable="true"]']) {
-            const els = [...document.querySelectorAll(sel)].filter(el => {
-                const r = el.getBoundingClientRect();
-                return r.width > 0 && r.height > 0 && r.top > vh * 0.3;
-            });
-            if (els.length) return els.sort((a, b) =>
-                b.getBoundingClientRect().top - a.getBoundingClientRect().top
-            )[0].getBoundingClientRect();
-        }
-        return null;
-    })();
-
-    if (inputRect) {
-        const rightBtns = [...document.querySelectorAll('button, [role="button"]')]
-            .filter(b => {
-                if (!isVisible(b) || b.disabled) return false;
-                const r = b.getBoundingClientRect();
-                return r.left >= inputRect.right - 10 &&
-                       Math.abs(r.top - inputRect.top) < 120;
-            })
-            .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
-        for (const b of rightBtns) {
-            dispatchPointerClick(b);
-            try { HTMLElement.prototype.click.call(b); } catch {}
-            await sleep(1000);
-            log(`Generate: spatial button (${(b.textContent || '').trim().substring(0, 20)})`);
-            return;
-        }
-    }
-
-    throw new Error('Generate button not found — compose bar may not be focused');
+    throw new Error('SELECTOR: Generate (arrow_forward) button not found');
 }
 
 function countVideoClips() {
@@ -784,6 +829,22 @@ async function clearRateLimitRetries(pid) {
     await chrome.storage.local.remove(`rl_retries_${pid}`);
 }
 
+// Selector / UI-not-found errors — tracked PER PROJECT, like rate-limits and kept
+// OUT of scene_fails. A missing button is a systemic Flow-UI problem, not a bad scene,
+// so it must never spend a scene's fail budget (one UI change must not skip all scenes).
+async function getSelectorErrors(pid) {
+    const r = await chrome.storage.local.get(`sel_errors_${pid}`);
+    return parseInt(r[`sel_errors_${pid}`] || '0');
+}
+
+async function setSelectorErrors(pid, count) {
+    await chrome.storage.local.set({ [`sel_errors_${pid}`]: count });
+}
+
+async function clearSelectorErrors(pid) {
+    await chrome.storage.local.remove(`sel_errors_${pid}`);
+}
+
 async function isRetryAfterReload(pid) {
     const r = await chrome.storage.local.get(`flow_retry_${pid}`);
     return r[`flow_retry_${pid}`] === '1';
@@ -853,7 +914,13 @@ async function runVideos(project) {
         await waitForCompose();
         await sleep(500);
     } else {
-        await clearRateLimitRetries(pid);   // fresh user-initiated run — clean throttle budget
+        // Fresh user-initiated run — start with a clean slate. Clearing scene_fails here
+        // is what un-sticks scenes previously skipped at SCENE_MAX_FAILS (e.g. scenes that
+        // hit 5 fails during the Flow UI breakage); already-done scenes are skipped anyway
+        // via disk truth (needsVideo), so this never re-does finished videos.
+        await clearRateLimitRetries(pid);   // clean throttle budget
+        await clearSelectorErrors(pid);     // clean selector budget
+        await clearSceneFails(pid, project.scenes);
         await clickNewProject();
         await waitForCompose();
         log('⏳ Waiting 20s — please configure model, ratio, quantity and dismiss any panels...');
@@ -873,6 +940,7 @@ async function runVideos(project) {
     // never a false "complete") if the throttle persists past the cap.
     const RATE_LIMIT_MAX_RETRIES = 5;
     const RATE_LIMIT_BACKOFF_MS  = 60000;   // 60s between throttle retries
+    const SELECTOR_ERROR_MAX = 5;           // per-project; UI change stalls loudly, never burns scene budget
     let anySceneSkipped = false;
 
     for (let i = 0; i < scenes.length; i++) {
@@ -891,9 +959,10 @@ async function runVideos(project) {
 
         let success = false;
         let reloadReason = '';
-        let rateLimited = false;   // transient throttle — handled separately, no fail penalty
+        let rateLimited = false;     // transient throttle — handled separately, no fail penalty
+        let selectorError = false;   // UI element not found — systemic, no scene-fail penalty
 
-        for (let attempt = 1; attempt <= 2 && !success && !reloadReason && !rateLimited; attempt++) {
+        for (let attempt = 1; attempt <= 2 && !success && !reloadReason && !rateLimited && !selectorError; attempt++) {
             if (attempt > 1) {
                 log(`Scene ${nn}: retry ${attempt}/2`);
                 await jitter(2500, 2500);
@@ -954,11 +1023,15 @@ async function runVideos(project) {
                 log(`✓ Scene ${nn} complete — ${doneCount}/${project.total_scenes} videos done`);
                 success = true;
                 await clearRateLimitRetries(pid);   // a save proves we're not throttled — reset budget
+                await clearSelectorErrors(pid);     // UI worked — reset selector budget
 
                 if (i < scenes.length - 1) await jitter(4000, 5000); // 4–9s between scenes
 
             } catch (e) {
                 log(`ERROR scene ${nn} attempt ${attempt}: ${e.message}`);
+                // A SELECTOR: error means a Flow UI element wasn't found — systemic, not a
+                // bad scene. Break out so it's handled WITHOUT spending the scene's budget.
+                if (e.message && e.message.startsWith('SELECTOR:')) { selectorError = true; break; }
             }
         }
 
@@ -980,6 +1053,27 @@ async function runVideos(project) {
             return;
         }
 
+        // A selector/UI element wasn't found — SYSTEMIC (Flow UI), not a bad scene. Like
+        // rate-limits, it must NOT spend the scene's fail budget, or one UI change would
+        // silently skip all 10 scenes. Retry the same scene after a reload; if it persists
+        // past the cap, STOP the whole phase loudly with scenes intact, so a flow.js
+        // selector fix + re-run resumes cleanly.
+        if (selectorError) {
+            const se = (await getSelectorErrors(pid)) + 1;
+            if (se > SELECTOR_ERROR_MAX) {
+                await clearSelectorErrors(pid);
+                log(`❌ Flow UI elements not found ${se - 1}× in a row (Start / "+" / Upload / `
+                  + `Add-to-Prompt). STOPPING — Google Flow's UI likely changed. No scenes were `
+                  + `marked failed; update flow.js selectors and re-run to resume.`);
+                chrome.runtime.sendMessage({ action: 'videosError', projectId: pid, message: 'Flow UI changed — selectors not found' });
+                return;
+            }
+            await setSelectorErrors(pid, se);
+            log(`⚠ UI element not found — retrying scene ${nn} after reload (selector try ${se}/${SELECTOR_ERROR_MAX}, NO scene penalty)`);
+            await reloadForRetry(pid, `Scene ${nn}: selector not found`);
+            return;
+        }
+
         if (!success) {
             const newFails = prevFails + 1;
             await setSceneFails(pid, nn, newFails);
@@ -996,6 +1090,7 @@ async function runVideos(project) {
 
     await clearSceneFails(pid, project.scenes);
     await clearRateLimitRetries(pid);
+    await clearSelectorErrors(pid);
     log(`=== VIDEO PHASE COMPLETE: ${pid} — ${doneCount}/${project.total_scenes} videos done ===`);
     const completionAction = anySceneSkipped ? 'videosPartialComplete' : 'videosComplete';
     chrome.runtime.sendMessage({ action: completionAction, projectId: pid });
