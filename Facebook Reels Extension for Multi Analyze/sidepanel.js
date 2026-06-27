@@ -270,7 +270,17 @@ let _uploadAutoRelease = null;     // safety timer so a dead/closed tab can't bl
 function _grantUpload(slotIndex) {
   _uploadHolder = slotIndex;
   const tabId = state.slots[slotIndex]?.tabId;
-  if (tabId != null) chrome.tabs.sendMessage(tabId, { type: 'UPLOAD_GRANTED' }).catch(() => {});
+  if (tabId != null) {
+    // Bring this tab to the FOREGROUND for its upload turn. A hidden/background tab is
+    // throttled by Chrome so hard that its upload (and the model menu) stall — this is why
+    // a tab failed even when ALONE in its turn. Because tabs take turns, only one is ever
+    // foregrounded at a time, so they don't fight for focus. Also focus the window so the
+    // active tab is genuinely un-throttled even if Chrome was in the background.
+    chrome.tabs.update(tabId, { active: true })
+      .then((t) => { if (t && t.windowId != null) chrome.windows.update(t.windowId, { focused: true }).catch(() => {}); })
+      .catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: 'UPLOAD_GRANTED' }).catch(() => {});
+  }
   clearTimeout(_uploadAutoRelease);
   // Long backstop ONLY for a wedged-but-still-open tab. A SLOW tab is not a dead tab —
   // a short timer here would release a still-uploading slow tab and bring back the very
