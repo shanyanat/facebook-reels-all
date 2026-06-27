@@ -29,6 +29,20 @@
 <!-- ── TAB: Analysis ─────────────────────────────────────────────────────── -->
 <div id="tabAnalysis">
 
+  <!-- ── ENGINE TOGGLE ─────────────────────────────────────────────────────── -->
+  <!-- Which AI writes the brief. ChatGPT (default) or Gemini — both run the same
+       slot pipeline in the browser; only the tab URL + injected content script differ. -->
+  <div class="mode-toggle" role="tablist">
+    <button class="mode-btn mode-active" id="engineBtnChatGPT" role="tab">
+      🤖 ChatGPT
+      <span class="mode-btn-sub">uses ChatGPT credits</span>
+    </button>
+    <button class="mode-btn" id="engineBtnGemini" role="tab">
+      ✨ Gemini
+      <span class="mode-btn-sub">pre-set model in Gemini</span>
+    </button>
+  </div>
+
   <!-- ── MODE TOGGLE ───────────────────────────────────────────────────────── -->
   <div class="mode-toggle" role="tablist">
     <button class="mode-btn mode-active" id="modeBtnMultiPage" role="tab">

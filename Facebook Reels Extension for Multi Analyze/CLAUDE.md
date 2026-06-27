@@ -29,6 +29,80 @@ Both modes converge on a normalized per-slot **job** (`buildJobs()` in `sidepane
 
 ---
 
+## Engine: ChatGPT or Gemini (browser) — added 2026-06-27
+
+A top-of-panel **engine toggle** (`engineBtnChatGPT` / `engineBtnGemini`, mirrors the
+mode toggle) chooses which AI writes the brief. Both run the **identical** slot
+pipeline in the browser — `buildJobs`, `writeBriefFile`, `trimBriefText`,
+`validateBrief`, and the `START_SLOT`/`SLOT_*` protocol are engine-agnostic. The only
+differences live in **`engineConfig()`** in `sidepanel.js`:
+
+| | ChatGPT (default) | Gemini |
+|---|---|---|
+| tab URL | `https://chatgpt.com/` | `https://gemini.google.com/app` |
+| host guard | `chatgpt.com` | `gemini.google.com` |
+| content script | `content-chatgpt.js` | `content-gemini.js` |
+
+`manifest.json` host_permissions includes `https://gemini.google.com/*` (required for
+`executeScript`). Tabs get `autoDiscardable:false` after `tabs.create` (Memory-Saver
+freeze guard) for **both** engines. The user pre-sets Gemini's model to **3.1 Pro +
+Extended** and lets Gemini remember it — `content-gemini.js` **never selects a model**.
+
+### `content-gemini.js` — LIVE, selectors locked 2026-06-27 (proven to 4 parallel slots)
+
+Built via a diagnostic-first process; selectors are now confirmed from live Gemini DOM,
+not guessed. The `DIAG` constant (`'dom'` / `'menu'` / `'upload'` / `''`) re-enables a
+focused DOM dump if Gemini's UI changes — set it, run one slot, copy the on-page green
+box, re-lock. `PROBE_GENERATING` logs the streaming-state DOM (off now; stop button
+confirmed). Live pipeline: `waitForReady` → `ensureProExtended` → `uploadFile(video)` →
+`uploadFile(charSheet)` → `typePrompt` → `clickSend` → `waitForTextResponse` →
+`waitForResponseStable` → `extractResponse`.
+
+**Locked Gemini facts (all confirmed live):**
+- **Composer**: `.ql-editor[contenteditable="true"]` (Quill; aria "Enter a prompt for Gemini").
+- **typePrompt** is paste-first via synthetic `text/plain` DataTransfer (Quill drops large
+  text from value setters). **No `navigator.clipboard` path** — the real clipboard is
+  shared across tabs and would let parallel multi_clip slots paste each other's prompt.
+- **Model**: the tier (Pro) is sticky, but a fresh/background tab defaults Thinking level
+  to **Standard** (trap #1 was real). `ensureProExtended()` sets **3.1 Pro + Extended**
+  every run via the mode pill (`button[aria-label^="Open mode picker"]`) → menu rows are
+  `role="menuitem"` matched **by text** (`3.1 Pro`, `Thinking level`, `Extended`).
+- **Upload (image AND video) = clipboard PASTE** (synthetic `ClipboardEvent` + DataTransfer)
+  — a pure DOM event, the only method that reliably works in BACKGROUND tabs. Video paste
+  works too (Gemini accepts pasted files). Ladder is paste → (image-only) drop → menu. The
+  menu path (`armFileInputCapture()` on "Upload & tools" → "Upload files" menuitem, aria
+  "Upload files. Documents, data, code files"; it intercepts the input's click and
+  `preventDefault()`s the OS dialog) is **FOREGROUND-only** (the Angular overlay doesn't
+  render in a hidden tab) and is **NOT run for video** — firing drop/menu mid-upload
+  disrupts the in-progress paste or double-attaches.
+- **Attachment detection is a strict DELTA** (`snapshotUpload`/`attachedSince`): only a
+  signal appearing AFTER the upload starts counts. Primary signal = the **Send button
+  appearing** (`hasVisibleSend()`) — an empty composer has none, so it shows the instant a
+  file attaches (fast + reliable). Two bugs this killed: an *absolute* filename check
+  false-SUCCEEDED on a filename already on the page (→ skipped the real upload, "attached"
+  in the same second); and a too-short window false-FAILED while the slow video chip was
+  still rendering (→ 4-minute fake freezes). Video chip can take ~30s+ in a throttled tab,
+  so video uses **one long paste window, no retry** (a retry mid-upload double-attaches);
+  `clickSend` waits for Send to be **enabled** so a half-uploaded video is never sent.
+- **Generating**: stop button aria **"Stop response"** (`findStopButton`). Do NOT key off
+  `[role="progressbar"]`/`[class*="loading"]` — Gemini keeps those mounted permanently
+  (would hang the wait 30 min). Transient `.blinking-cursor` is the only extra signal.
+- **Response/extraction**: `.model-response-text` / `message-content`, largest-text-block
+  fallback. `trimBriefText` + `validateBrief` (shared) confirmed to fire on Gemini output.
+
+**Parallel slots = TAKE TURNS (upload serialization).** 4 simultaneous video uploads starve
+one tab (it freezes and never gets its video). So the Gemini content script sends
+`ACQUIRE_UPLOAD` before its model-set + upload and waits for `UPLOAD_GRANTED`; **sidepanel.js**
+(`_grantUpload` / `_releaseUpload` / `_uploadQueue`, `_resetUploadLock()` each run) grants
+**one tab at a time**, released in a `finally` so generation still runs in parallel after.
+A closed tab frees its turn instantly via `chrome.tabs.onRemoved`; a **slow-but-alive** tab
+keeps its turn — do NOT use a short auto-release timer, it would re-introduce the contention
+this fixes (the 10-min timer is only a wedged-tab backstop). **Proven at 4 parallel slots.**
+ChatGPT is unaffected — its content script never sends these messages, so it stays fully
+parallel. Trade-off: uploads are sequential (a bit slower) but reliable on any machine; if a
+tab ever fails its video even when **alone** in its turn, the bottleneck is per-tab Chrome
+throttling (not contention) and the next step would be foregrounding each tab during its turn.
+
 ## File Structure
 
 ```

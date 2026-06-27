@@ -209,6 +209,11 @@ const VALID_END = 'The End of CAPTION & HASHTAGS';
 // ══ STATE ══════════════════════════════════════════════════════════════════
 
 const state = {
+  // Which AI writes the brief, in the browser. 'chatgpt' (default/original) or 'gemini'.
+  // Both run the identical slot pipeline; only the tab URL + injected content script differ
+  // (see engineConfig()). The pipeline below stays engine-agnostic.
+  engine: 'chatgpt',
+
   // 'multi_page' (default/original): 1 shared video → N page slots, each with its own char sheet.
   // 'multi_clip' (new): 1 shared page folder + char sheet → N video-clip slots, all briefs into that folder.
   mode: 'multi_page',
@@ -252,6 +257,65 @@ const state = {
 
 // Pending resolvers: slotIndex → { resolve, reject }
 const slotResolvers = new Map();
+
+// ══ UPLOAD SERIALIZATION (Gemini "take turns") ═════════════════════════════════
+// Gemini video uploads are heavy; 4 in parallel starve one tab. The Gemini content
+// script asks ACQUIRE_UPLOAD before its model-set + upload and we grant it to ONE
+// tab at a time (RELEASE_UPLOAD when done) — they still generate in parallel after.
+// ChatGPT's content script never sends these, so it's unaffected.
+let _uploadHolder = null;          // slotIndex currently holding the turn (or null)
+const _uploadQueue = [];           // waiting slotIndexes (FIFO)
+let _uploadAutoRelease = null;     // safety timer so a dead/closed tab can't block forever
+
+function _grantUpload(slotIndex) {
+  _uploadHolder = slotIndex;
+  const tabId = state.slots[slotIndex]?.tabId;
+  if (tabId != null) chrome.tabs.sendMessage(tabId, { type: 'UPLOAD_GRANTED' }).catch(() => {});
+  clearTimeout(_uploadAutoRelease);
+  // Long backstop ONLY for a wedged-but-still-open tab. A SLOW tab is not a dead tab —
+  // a short timer here would release a still-uploading slow tab and bring back the very
+  // contention we serialized away (this is the slow-computer case). Real tab closure is
+  // handled instantly by chrome.tabs.onRemoved below, so this can be generously long.
+  _uploadAutoRelease = setTimeout(() => _releaseUpload(slotIndex, true), 600000);
+}
+
+function _releaseUpload(slotIndex, isAuto) {
+  if (_uploadHolder !== slotIndex && !isAuto) return;   // ignore a stale release
+  clearTimeout(_uploadAutoRelease);
+  _uploadAutoRelease = null;
+  if (_uploadQueue.length) _grantUpload(_uploadQueue.shift());
+  else _uploadHolder = null;
+}
+
+function _resetUploadLock() {
+  _uploadHolder = null;
+  _uploadQueue.length = 0;
+  clearTimeout(_uploadAutoRelease);
+  _uploadAutoRelease = null;
+}
+
+// A closed/crashed tab must free its upload turn immediately (and be dropped from the
+// queue), so the queue never stalls messaging a dead tab — without misfiring on a slow
+// but alive tab the way a short timer would.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const slot = state.slots.findIndex(s => s && s.tabId === tabId);
+  if (slot < 0) return;
+  const qi = _uploadQueue.indexOf(slot);
+  if (qi >= 0) _uploadQueue.splice(qi, 1);              // queued tab closed → drop it
+  if (_uploadHolder === slot) _releaseUpload(slot, true); // holder closed → advance
+});
+
+// ══ ENGINE CONFIG ════════════════════════════════════════════════════════════
+// The ONLY place that knows what differs between ChatGPT and Gemini. Everything
+// else in the pipeline (buildJobs, writeBriefFile, trimBriefText, validateBrief,
+// the START_SLOT/SLOT_* protocol, the stagger) is engine-agnostic.
+function engineConfig() {
+  return state.engine === 'gemini'
+    ? { url: 'https://gemini.google.com/app', host: 'gemini.google.com',
+        script: 'content-gemini.js', label: 'Gemini' }
+    : { url: 'https://chatgpt.com/', host: 'chatgpt.com',
+        script: 'content-chatgpt.js', label: 'ChatGPT' };
+}
 
 // ══ UTILITIES ══════════════════════════════════════════════════════════════
 
@@ -640,7 +704,7 @@ function slotCardInner(index, slot) {
   // Action buttons shown after a slot reaches a terminal state
   const isTerminal = ['done', 'warn', 'error'].includes(slot.status);
   const chatgptBtn = (slot.chatgptUrl && isTerminal)
-    ? `<button class="slot-action-btn" data-slot="${index}" data-action="open-chatgpt">↗ Open ChatGPT</button>`
+    ? `<button class="slot-action-btn" data-slot="${index}" data-action="open-chatgpt">↗ Open ${escHtml(engineConfig().label)}</button>`
     : '';
   const viewBriefBtn = (['done', 'warn'].includes(slot.status) && (slot.outDirHandle || slot.dirHandle))
     ? `<button class="slot-action-btn" data-slot="${index}" data-action="view-brief">📄 View Brief</button>`
@@ -1125,6 +1189,7 @@ async function startAnalysis() {
   }
 
   state.isRunning = true;
+  _resetUploadLock();   // clear any stale upload turn from a previous run
   document.getElementById('validationMsg').textContent = '';
   document.getElementById('logSection').style.display = '';
   document.getElementById('logContainer').innerHTML = '';
@@ -1139,18 +1204,24 @@ async function startAnalysis() {
   addLog(null, `Starting ${state.slotCount} slot(s)…`, 'info');
 
   const jobs = buildJobs();
+  const engine = engineConfig();
 
   // Open all tabs
   const tabIds = [];
   for (let i = 0; i < state.slotCount; i++) {
-    const tab = await chrome.tabs.create({ url: 'https://chatgpt.com/', active: false });
+    const tab = await chrome.tabs.create({ url: engine.url, active: false });
+    // Stop Chrome's Memory Saver from freezing/discarding these background tabs —
+    // each slot waits up to 30 min in the background while the AI generates, which
+    // is exactly when a discarded tab would silently stall. autoDiscardable is not
+    // a tabs.create option, so it must be set via tabs.update after creation.
+    try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch {}
     state.slots[i].tabId = tab.id;
     tabIds.push(tab.id);
     renderSlotCard(i);
     if (i < state.slotCount - 1) await sleep(600);
   }
 
-  addLog(null, `Opened ${tabIds.length} ChatGPT tabs`, 'info');
+  addLog(null, `Opened ${tabIds.length} ${engine.label} tabs`, 'info');
 
   // Launch all slots in parallel (each handles its own lifecycle).
   // In multi_clip each slot builds its prompt from its own topic/scenes/ratio;
@@ -1188,31 +1259,33 @@ async function runSlot(slotIndex, tabId, job, prompt) {
     await sleep(delay);
   }
 
-  updateSlotStatus(slotIndex, 'waiting', '⏳ Waiting for ChatGPT to load…');
+  const engine = engineConfig();
+
+  updateSlotStatus(slotIndex, 'waiting', `⏳ Waiting for ${engine.label} to load…`);
 
   // Wait for the tab to fully load (90 s — background tabs load slower)
   await waitForTabReady(tabId, 90000);
-  await sleep(3000); // extra time for ChatGPT's SPA to boot
+  await sleep(3000); // extra time for the AI's SPA to boot
 
-  // Guard against redirect races: ChatGPT sometimes fires 'complete' for an
+  // Guard against redirect races: the site sometimes fires 'complete' for an
   // intermediate auth/redirect URL before landing on the actual page.
   const tab = await chrome.tabs.get(tabId);
-  if (!tab.url?.includes('chatgpt.com')) {
-    updateSlotStatus(slotIndex, 'waiting', '⏳ Waiting for ChatGPT redirect…');
+  if (!tab.url?.includes(engine.host)) {
+    updateSlotStatus(slotIndex, 'waiting', `⏳ Waiting for ${engine.label} redirect…`);
     await waitForTabReady(tabId, 30000);
     await sleep(2000);
   }
 
-  // Inject the content script
+  // Inject the content script for the selected engine
   await chrome.scripting.executeScript({
     target: { tabId },
-    files: ['content-chatgpt.js'],
+    files: [engine.script],
   });
 
   // Ping until the script is ready (45 s)
   await pingTabUntilReady(tabId, 45000);
 
-  updateSlotStatus(slotIndex, 'starting', '🚀 Sending data to ChatGPT tab…');
+  updateSlotStatus(slotIndex, 'starting', `🚀 Sending data to ${engine.label} tab…`);
 
   await chrome.tabs.sendMessage(tabId, {
     type: 'START_SLOT',
@@ -1292,6 +1365,20 @@ async function closeTab(tabId) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   sendResponse({ ok: true });
 
+  if (msg.type === 'ACQUIRE_UPLOAD') {
+    // Grant immediately if free; otherwise queue (dedup) until it's this slot's turn.
+    if (_uploadHolder === null) _grantUpload(msg.slotIndex);
+    else if (_uploadHolder !== msg.slotIndex && !_uploadQueue.includes(msg.slotIndex)) {
+      _uploadQueue.push(msg.slotIndex);
+    }
+    return;
+  }
+
+  if (msg.type === 'RELEASE_UPLOAD') {
+    _releaseUpload(msg.slotIndex, false);
+    return;
+  }
+
   if (msg.type === 'SLOT_PROGRESS') {
     const { slotIndex, status, message } = msg;
     updateSlotStatus(slotIndex, status, message);
@@ -1339,6 +1426,7 @@ function setInputsEnabled(enabled) {
     'btnLoadPrompt','btnLoadVideo','inputTopic','selectCharacter',
     'selectScenes','selectRatio','inputFilename','btnSlotMinus','btnSlotPlus',
     'modeBtnMultiPage','modeBtnMultiClip',
+    'engineBtnChatGPT','engineBtnGemini',
   ];
   ids.forEach(id => {
     const el = document.getElementById(id);
@@ -1349,6 +1437,15 @@ function setInputsEnabled(enabled) {
   ).forEach(btn => {
     btn.disabled = !enabled;
   });
+}
+
+// Switch which AI writes the brief. Engine choice doesn't change the slot UI, so
+// this only flips state + the active-button styling. Locked while a run is in flight.
+function switchEngine(engine) {
+  if (state.isRunning || engine === state.engine) return;
+  state.engine = engine;
+  document.getElementById('engineBtnChatGPT').classList.toggle('mode-active', engine === 'chatgpt');
+  document.getElementById('engineBtnGemini').classList.toggle('mode-active', engine === 'gemini');
 }
 
 // Switch between multi_page and multi_clip. Show/hide the mode-specific cards,
@@ -1458,6 +1555,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('inputAddPage').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') pipelineAddPage();
   });
+
+  // ── Engine toggle (ChatGPT / Gemini) ─────────────────────────────────────────
+  document.getElementById('engineBtnChatGPT').addEventListener('click', () => switchEngine('chatgpt'));
+  document.getElementById('engineBtnGemini').addEventListener('click', () => switchEngine('gemini'));
 
   // ── Mode toggle ──────────────────────────────────────────────────────────────
   document.getElementById('modeBtnMultiPage').addEventListener('click', () => switchMode('multi_page'));
