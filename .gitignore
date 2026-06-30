@@ -27,3 +27,15 @@ __pycache__/
 
 # --- Machine-local Claude Code settings ---
 **/.claude/settings.local.json
+
+# --- Secrets (per-machine API keys — NEVER commit) ---
+# The Ai Auto Editor reads its Gemini API key from .env.txt. Each machine keeps its
+# OWN key, so this file must stay local: ignoring it stops a push from one machine
+# overwriting another's key, AND stops a backup's `git clean -fd` from deleting it
+# (git clean preserves ignored files). The .env.example template stays tracked.
+.env
+.env.*
+!.env.example
+
+# --- Windows shortcut junk (machine-local) ---
+*.lnk

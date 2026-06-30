@@ -32,7 +32,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from parse_analysis import add_project, load_contents, save_contents, update_project_prompts
-from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect, sweep_captions
+from bot import do_queue, do_addpage, do_renamepage, do_archive, do_collect, do_prune, sweep_captions
 from notify import notify, notify_error
 
 BASE_DIR = Path(__file__).parent
@@ -108,11 +108,21 @@ def _auto_advance(project_id: str, page: str):
 
 
 def _start_auto_advance(project_id: str, page: str):
-    """Fire _auto_advance on a daemon thread so the HTTP response returns immediately.
-    Kill-switch: set REELS_AUTO_ADVANCE=0 to disable (reels then wait for a manual
-    `py bot.py archive`/`force-complete`)."""
-    if os.environ.get("REELS_AUTO_ADVANCE", "1") == "0":
-        log(f"Auto-advance disabled (REELS_AUTO_ADVANCE=0) — {project_id} left for manual archive")
+    """Manual-review workflow (DEFAULT as of 2026-06-30): a completed reel is LEFT in
+    pages/<page>/working/ so you can inspect every image/video and regenerate any
+    distorted scene before it moves on. Approve it with the per-reel Archive button in
+    the extension (or `py bot.py archive`), then click Collect — editor_queue.py then
+    auto-edits + writes caption.txt for whatever is in complete/.
+
+    Redo a bad scene: delete its file in working/ (e.g. {pid}-scene-03-vdo.mp4). That
+    drops the reel to 'videos_in_progress', which is selectable again, so re-running it
+    regenerates only the missing scene (flow.js picks img_on_disk && !vdo_on_disk).
+
+    Opt back in to the old fully-automatic archive→collect→caption on completion by
+    setting REELS_AUTO_ADVANCE=1 before launching monitor.py."""
+    if os.environ.get("REELS_AUTO_ADVANCE", "0") != "1":
+        log(f"{project_id} complete — left in working/ for manual review "
+            f"(Archive in the extension to approve). Set REELS_AUTO_ADVANCE=1 to auto-advance.")
         return
     threading.Thread(target=_auto_advance, args=(project_id, page), daemon=True).start()
 
@@ -209,13 +219,6 @@ def _disk_status_for(project: dict) -> str:
     working_dir = PAGES_DIR / page / "working"
     ready_dir   = PAGES_DIR / page / "ready" / pid
 
-    # If already archived via bot.py (project_status=complete + ready/ exists)
-    if project.get("project_status") == "complete" and ready_dir.exists():
-        return "archived"
-    # Files were moved to complete/ by collect — nothing left in working/ or ready/
-    if project.get("project_status") == "complete":
-        return "collected"
-
     done_img = done_vid_w = done_vid_r = 0
     for n in range(1, total + 1):
         nn = str(n).zfill(2)
@@ -230,6 +233,13 @@ def _disk_status_for(project: dict) -> str:
             done_vid_r += 1
     done_vid = done_vid_w + done_vid_r
 
+    # Disk truth FIRST. A reel whose clips are still in working/ must show as
+    # videos_done (so the extension offers an Archive button and stays selectable
+    # for a redo) even though contents.json may already say project_status=complete.
+    # Only when NOTHING is left in working/ or ready/ do we trust
+    # project_status=complete to mean the files were already collected into
+    # complete/ — otherwise the manual-review gate (files kept in working/) would be
+    # mislabelled "collected" and vanish from the extension before it can be approved.
     if done_vid_r == total:
         return "archived"
     if done_vid == total:
@@ -240,6 +250,8 @@ def _disk_status_for(project: dict) -> str:
         return "images_done"
     if (working_dir / f"{pid}-storyboard.png").exists():
         return "storyboard_done"
+    if project.get("project_status") == "complete":
+        return "collected"
     return "pending"
 
 
@@ -473,7 +485,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 # Notify AFTER releasing the lock so a slow Telegram call can't
                 # stall other parallel slots' contents.json writes.
                 if completed_page is not None:
-                    notify(f"🎬 Videos complete: {pid} ({completed_page}) — auto-advancing")
+                    notify(f"🎬 Videos complete: {pid} ({completed_page}) — left in working/ for review (Archive in the extension to approve)")
                     _start_auto_advance(pid, completed_page)
                 self.send_response(200); self._cors(); self.end_headers()
                 self.wfile.write(b'{"ok":true}')
@@ -723,11 +735,45 @@ class DownloadsHandler(FileSystemEventHandler):
                 update_project(project_id, project_status="videos_in_progress")
         # Notify outside the lock — keep contents.json writes fast under load.
         if completed_page is not None:
-            notify(f"🎬 Videos complete: {project_id} ({completed_page}) — auto-advancing")
+            notify(f"🎬 Videos complete: {project_id} ({completed_page}) — left in working/ for review (Archive in the extension to approve)")
             _start_auto_advance(project_id, completed_page)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+
+def _startup_prune():
+    """Trim finished reels out of the live contents.json ONCE, at startup, while the
+    server is still idle (no extension polls yet, so no cross-process write race —
+    the one moment prune is perfectly safe to run automatically).
+
+    Why: a bloated contents.json is the main cause of the extension's intermittent
+    'monitor.py not reachable' stalls — /contents.json re-reads the whole file and
+    disk-stats every project on every 4s poll, so each finished reel left in the live
+    file makes every poll heavier. do_prune moves complete+collected reels (including
+    posted '.-' folders) into data/contents.archive.json losslessly; it only removes
+    the JSON entry, never the folder, and reel numbers stay reserved.
+
+    Best-effort: any failure is logged and ignored so monitor.py always starts.
+    Disable with REELS_AUTO_PRUNE=0 (e.g. if you want to inspect prune output by hand
+    via `py bot.py prune` first)."""
+    if os.environ.get("REELS_AUTO_PRUNE", "1") == "0":
+        log("Auto-prune disabled (REELS_AUTO_PRUNE=0) - run `py bot.py prune` manually.")
+        return
+    try:
+        before = len(load_contents())
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):   # do_prune prints a long per-reel table
+            do_prune(apply=True)
+        after = len(load_contents())
+        moved = before - after
+        if moved > 0:
+            log(f"Auto-prune: archived {moved} finished reel(s) -> contents.archive.json; "
+                f"{after} live. (Set REELS_AUTO_PRUNE=0 to skip.)")
+        else:
+            log(f"Auto-prune: nothing to archive - {after} live project(s).")
+    except Exception as e:
+        log(f"Auto-prune skipped (non-fatal): {e!r}")
+
 
 def main():
     # Tolerate ✓/—/emoji in prints on legacy consoles (cp874) so a log line — or
@@ -740,6 +786,10 @@ def main():
 
     for d in [PAGES_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Keep contents.json small BEFORE the server starts accepting polls — runs while
+    # nothing else can be writing the file, then the extension's polls stay fast.
+    _startup_prune()
 
     # Start HTTP server in background thread
     server_thread = threading.Thread(target=run_server, daemon=True)

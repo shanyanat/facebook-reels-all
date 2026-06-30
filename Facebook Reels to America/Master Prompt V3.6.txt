@@ -1,0 +1,812 @@
+TOPIC        : [อธิบายสั้นๆ ว่าคลิปทำอะไร]
+CHARACTER    : [มีรูป Character Sheet แนบมาด้วย / ไม่มี ใช้คนในคลิป]
+TOTAL SCENES : [จำนวนซีน เช่น 8]
+ASPECT RATIO : [เช่น 9:16 หรือ 3:4]
+
+คุณคือผู้เชี่ยวชาญระดับโลกด้านการวิเคราะห์วิดีโอ,
+Cinematography, Prompt Engineering สำหรับ
+Google Flow (Image + Video) และ Content Creation
+สำหรับตลาดสหรัฐอเมริกา
+
+ฉันแนบมา 2 อย่าง:
+1. คลิปวิดีโอเกี่ยวกับ {TOPIC}
+2. {CHARACTER}
+
+ภารกิจ: วิเคราะห์คลิปอย่างละเอียดและเขียน Prompt
+{TOTAL SCENES} ซีน เพื่อใช้สร้างภาพและวิดีโอตาม
+STORYBOARD WORKFLOW ที่มี Continuity 100%
+และมีความน่าสนใจสูงสุดสำหรับผู้ชมชาวอเมริกัน
+
+════════════════════════════════════
+WORKFLOW ที่ฉันจะใช้งานจริง
+════════════════════════════════════
+
+STEP 1 — สร้าง Storyboard ภาพเดียว {TOTAL SCENES} ซีน
+→ ใช้ STORYBOARD PROMPT + แนบ Character Sheet
+→ ได้ภาพ Grid {TOTAL SCENES} ช่อง มีเลขกำกับมุมซ้ายบน
+
+STEP 2 — สร้างภาพซีน 1
+→ แนบ: Character Sheet + ภาพ Storyboard
+
+STEP 3 — สร้างภาพซีน 2 ถึง {TOTAL SCENES}
+→ แนบ: Character Sheet + ภาพ Storyboard + ภาพซีน N-1
+
+STEP 4 — สร้างวิดีโอซีน 1 ถึง {TOTAL SCENES}
+→ แนบ: ภาพซีน N ที่สร้างได้จาก STEP 2-3
+
+STEP 5 — สร้างภาพ Thumbnail
+→ แนบ: Character Sheet เท่านั้น
+→ ใช้ THUMBNAIL PROMPT
+
+════════════════════════════════════
+PRE-ANALYSIS — ทำก่อนทุกอย่าง ก่อนแม้แต่ COMPLEXITY CHECK
+════════════════════════════════════
+
+⚠️ ขั้นตอนนี้บังคับทำก่อนเสมอ ห้ามข้ามเด็ดขาด
+
+ดูคลิปทั้งหมดตั้งแต่ต้นจนจบ 1 รอบ
+โดยมีจุดประสงค์เพื่อจับ 3 สิ่งนี้เท่านั้น:
+
+□ DIALOGUE SCAN
+  ฟังเสียงพูดทุกคำในคลิปอย่างละเอียด
+  จดทุกประโยคที่พูดออกมา พร้อมระบุ:
+  - ช่วงเวลาในคลิป (เช่น 0:03-0:05)
+  - ใครพูด
+  - พูดว่าอะไร (ถอดคำพูดให้ตรงที่สุด)
+  - โทนเสียง
+  ⚠️ ถ้าพูดเร็วหรือไม่ชัด ให้ฟังซ้ำจนแน่ใจ
+  ห้ามสรุปว่า "No dialogue" ถ้ายังไม่แน่ใจ 100%
+  ถ้าไม่มีบทพูดจริงๆ ให้เขียนว่า
+  "Confirmed: No dialogue in entire clip"
+
+□ CAMERA MOVEMENT SCAN
+  จับทุก shot และ camera movement ตลอดคลิป:
+  - Shot ที่ N: [ช่วงเวลา] — [มุมกล้อง] — [การเคลื่อนไหว]
+  ⚠️ ต้องจับให้ครบทุก cut ทุก movement
+  ห้ามรวม shot หลายอันเป็น shot เดียว
+
+□ OVERALL STORY ARC
+  สรุปโครงเรื่องและ emotional journey ของคลิป
+  ใน 3-5 ประโยค เพื่อใช้เป็นฐานในการเขียน
+  CREATIVE ENHANCEMENT
+
+⚠️ ต้องแสดงผล PRE-ANALYSIS ออกมาก่อน
+ก่อนจะดำเนินการ COMPLEXITY CHECK
+ห้ามข้ามหรือรวมกับขั้นตอนอื่น
+
+════════════════════════════════════
+STEP 0 — COMPLEXITY CHECK
+════════════════════════════════════
+
+AI ประเมินคลิปและตอบทุกข้อนี้ก่อน:
+
+□ จำนวนตัวละครหลักในคลิป           : ___
+□ จำนวน Environment ที่แตกต่างกัน   : ___
+□ จำนวนวัตถุหลักทั้งหมด             : ___
+□ จำนวนซีนที่ขอ                     : ___
+
+⚠️ ถ้าข้อใดเกินขีดจำกัดด้านล่าง ให้หยุดทันที
+และแจ้งฉันก่อน ห้ามดำเนินการต่อเอง:
+- ตัวละครมากกว่า 3 คน
+- Environment มากกว่า 5 แบบ
+- วัตถุหลักมากกว่า 8 ชิ้น
+- จำนวนซีนมากกว่า 12
+
+ถ้าไม่เกินทุกข้อ ให้ดำเนินการต่อได้เลย
+
+════════════════════════════════════
+STEP 0 — LOCKED VARIABLES
+วิเคราะห์คลิปและกรอกทุกช่องให้ครบ
+ห้ามเว้นว่างแม้แต่ช่องเดียว
+════════════════════════════════════
+
+▸ CHARACTER LOCK
+
+[ถ้า CHARACTER = "มีรูป Character Sheet แนบมาด้วย"]
+→ วิเคราะห์จากรูปที่แนบเท่านั้น
+  ดึงเฉพาะ Action และท่าทางจากคลิปมาใช้
+
+[ถ้า CHARACTER = "ไม่มี ใช้คนในคลิป"]
+→ วิเคราะห์บุคคลจากคลิปโดยตรง
+
+[ถ้าไม่มีตัวละครในคลิปเลย]
+→ ข้ามส่วนนี้ทั้งหมด ไม่ต้องกรอก
+
+AI กรอกเฉพาะที่เกี่ยวข้อง:
+
+- เพศ / อายุโดยประมาณ                : _______________
+- รูปร่างโดยรวม                       : _______________
+- โครงหน้า / สีผม / ทรงผม            : _______________
+- ตำหนิพิเศษ                         : _______________
+- เสื้อชั้นนอก                        : _______________
+- เสื้อชั้นใน                         : _______________
+- กางเกง                             : _______________
+- รองเท้า                            : _______________
+- อุปกรณ์เสริม                        : _______________
+- รอยเปื้อน/สภาพเสื้อผ้าซีนแรก       : _______________
+
+▸ CHARACTER STATE TABLE
+⚠️ กรอกเฉพาะซีนที่สภาพเสื้อผ้าหรือรูปลักษณ์เปลี่ยนไป
+ถ้าไม่มีการเปลี่ยนแปลงตลอดทั้งคลิป ให้เขียนว่า
+"No change across all scenes"
+
+[ตัวละคร] — SCENE N STATE : _______________
+
+▸ CAST LOCK
+⚠️ กรอกเฉพาะถ้ามีตัวละครมากกว่า 1 คน
+ถ้ามีคนเดียว ให้เขียนว่า "Single character only"
+
+จำนวนตัวละครทั้งหมด : ___
+ตัวละครที่ 1 : [ชื่อ/บทบาท] — [บรรยายรูปลักษณ์สั้นๆ]
+ตัวละครที่ 2 : [ชื่อ/บทบาท] — [บรรยายรูปลักษณ์สั้นๆ]
+
+ตำแหน่งในเฟรมแต่ละซีน:
+SCENE N : [ตัวละคร 1 อยู่ตรงไหน] /
+          [ตัวละคร 2 อยู่ตรงไหน]
+
+▸ BACKGROUND CHARACTERS TABLE
+⚠️ วิเคราะห์จากคลิปเท่านั้น
+ห้าม AI เพิ่มตัวประกอบเองถ้าไม่มีในคลิปต้นฉบับ
+ถ้าคลิปไม่มีตัวประกอบเลย ให้เขียนว่า
+"No background characters in source clip"
+
+SCENE N BACKGROUND:
+- มีตัวประกอบไหม        : มี / ไม่มี
+- จำนวนโดยประมาณ       : ___
+- ลักษณะทั่วไป          : _______________
+- ระดับความโดดเด่น      : background only /
+                          slightly visible / clearly visible
+- การเคลื่อนไหว         : _______________
+
+▸ ENVIRONMENT LOCK
+
+⚠️ กลุ่มเป้าหมายเป็นชาวอเมริกัน
+ให้ปรับสภาพแวดล้อมให้มี American aesthetic เสมอ
+โดยยังคง concept และ setting หลักจากคลิปต้นฉบับ
+แต่ปรับรายละเอียดให้รู้สึกเหมือนอยู่ในอเมริกา เช่น:
+- บ้านทรง American suburban / craftsman / ranch style
+- สนามหญ้าเขียวสะอาด ทรัพย์สินดูแลดี
+- รถ pickup truck หรือ SUV อเมริกันในพื้นหลัง (ถ้าเหมาะสม)
+- ท้องฟ้าสีฟ้าใส แสงแดดอเมริกันมิดเวสต์หรือซับเบิร์บ
+- ป้ายหรือสิ่งของที่บ่งบอกถึงอเมริกา (ถ้าเหมาะสม)
+
+AI กรอกจากการวิเคราะห์คลิป พร้อมปรับเป็น
+American aesthetic:
+
+- ใน/กลางแจ้ง                         : _______________
+- พื้นผิว (วัสดุ/สี/สภาพ)             : _______________
+- ผนัง/ฉากหลัง (American style)       : _______________
+- แหล่งแสง (ทิศ/ความแรง/อุณหภูมิสี)  : _______________
+- สภาพอากาศ/เวลาของวัน                : _______________
+- สิ่งของพื้นหลังที่เห็นประจำ          : _______________
+
+⚠️ ถ้าสภาพแวดล้อมเปลี่ยนระหว่างซีน ให้กรอกแยกเป็น
+Environment A / B / C และระบุว่าซีนไหนใช้อันไหน
+
+▸ LIGHTING STATE TABLE
+⚠️ กรอกเฉพาะถ้าแสงเปลี่ยนระหว่างซีน
+ถ้าแสงคงที่ตลอด ให้เขียนว่า "Consistent lighting"
+
+SCENE N LIGHTING : _______________
+
+▸ COMPOSITION LOCK
+
+⚠️ ใช้ข้อมูลจาก CAMERA MOVEMENT SCAN ใน PRE-ANALYSIS
+เป็นฐานในการกรอกส่วนนี้ทั้งหมด
+ห้าม AI คิดหรือสร้างมุมกล้องขึ้นมาเองเด็ดขาด
+ทุก shot ต้องมาจากคลิปต้นฉบับเท่านั้น
+
+AI กรอกมุมกล้องและ movement แยกตามซีน:
+
+SCENE N CAMERA:
+- Primary angle   : _______________
+  (eye-level / low-angle / high-angle oblique /
+  top-down 90° / aerial forward-facing)
+- Movement type   : _______________
+  (static / dolly in / dolly out / pan left /
+  pan right / tilt up / tilt down /
+  tracking shot / orbit / arc / handheld /
+  crane up / crane down)
+- Movement speed  : _______________
+  (very slow / slow / medium / fast)
+- Frame distance  : _______________
+  (extreme close-up / close-up / medium close-up /
+  medium / medium wide / wide / extreme wide)
+- ท้องฟ้าในเฟรม  : มี (___%) / ไม่มี
+- Vanishing Point : มี (ตำแหน่ง: ___) / ไม่มี
+
+(ทำซ้ำทุกซีน)
+
+⚠️ SHAPE LOCK:
+ถ้าพื้นที่หลักในคลิปเป็นเส้นตรง ต้องระบุ:
+"SHAPE LOCK: [รูปทรงที่ถูกต้อง] — NO [รูปทรงที่ผิด]"
+
+⚠️ เมื่อกรอกครบแล้ว ให้รวม composition โดยรวม
+เป็น 1 บรรทัดสำหรับใช้ใน Prompt:
+[COMPOSITION LOCK]: [ข้อมูล composition โดยรวม]
+แล้ว copy Camera ของแต่ละซีนไปวางในซีนนั้นโดยตรง
+
+▸ PROP & GEOMETRY LOCK
+
+AI กรอกสำหรับวัตถุหลักทุกชิ้น:
+
+□ ชื่อวัตถุ                           : _______________
+□ รูปทรงเรขาคณิต (เลือก 1)           : _______________
+  (perfect cylinder / rectangular box /
+  square cube / sphere / cone /
+  irregular organic shape)
+  ⚠️ ห้ามใช้คำว่า "container" หรือ "vessel"
+□ อัตราส่วน กว้าง:สูง                 : ___:___
+□ ขนาดเทียบตัวคน                     : _______________
+□ วัสดุ                              : _______________
+□ พื้นผิว                            : _______________
+□ สีหลัก / สีรอง / สีขอบ            : _______________
+□ จุดเด่นพิเศษ                       : _______________
+
+(ทำซ้ำสำหรับวัตถุหลักทุกชิ้น)
+
+── PROP STATE TABLE ──
+⚠️ AI ต้องทำ 2 สิ่งสำหรับทุกวัตถุในทุกซีนที่มันปรากฏ:
+
+1. ระบุ CONTINUITY TYPE:
+   TYPE A = วัตถุชิ้นเดิมจากซีนก่อน สภาพเปลี่ยน
+   TYPE B = วัตถุนี้ปรากฏครั้งแรกในซีนนี้
+   TYPE C = วัตถุนี้ไม่ปรากฏในซีนนี้
+
+2. เขียน Prop State ตาม TYPE:
+   TYPE A → "The exact same object as in the previously
+     attached image, now in this new state: ___"
+   TYPE B → "New object appearing for the first time: ___"
+   TYPE C → ข้ามไป
+
+⚠️ ถ้าวัตถุชิ้นเดิมเปลี่ยนชื่อในภายหลัง
+ให้ระบุ TYPE A และบอกว่า
+"evolved from the [ชื่อเดิม] seen in Scene [N]"
+
+⚠️ ห้ามใช้คำคลุมเครือ
+ต้องระบุ เช่น "filled to 2/3 height, 6 bags visible"
+
+รูปแบบ:
+[ชื่อวัตถุ] — SCENE N — TYPE [A/B/C]
+Prop State : _______________
+
+▸ ACTION INTENT TABLE
+⚠️ กรอกทุกซีนที่มีตัวละคร
+ถ้าไม่มีตัวละครในคลิปเลย ให้เขียนว่า "No characters"
+
+SCENE N — [ชื่อตัวละคร/บทบาท]
+Intent      : [วัตถุประสงค์ที่แท้จริง]
+Emotion     : [อารมณ์ที่ขับเคลื่อน]
+Facial Expr : [สีหน้าที่แสดงออก]
+Eye Contact : [แววตาและทิศทางสายตา]
+Body Lang   : [ภาษากายโดยรวม]
+Movement    : [การเคลื่อนไหวที่เกิดขึ้นจาก Intent]
+
+⚠️ FLOW SAFE — ถ้า Intent เกี่ยวกับความรุนแรง
+ให้เลี่ยงด้วยการบรรยายอารมณ์แทนการกระทำ:
+❌ chasing to kill / aiming to shoot /
+   attacking / threatening / stabbing
+✅ pursuing with desperate urgency /
+   taking defensive tactical position /
+   moving to intercept with focus /
+   standing guard with heightened alertness
+
+▸ DIALOGUE TABLE
+⚠️ ใช้ข้อมูลจาก DIALOGUE SCAN ใน PRE-ANALYSIS
+เป็นฐานในการกรอกส่วนนี้ทั้งหมด
+ห้ามวิเคราะห์บทพูดใหม่โดยไม่อ้างอิง PRE-ANALYSIS
+⚠️ ถ้า PRE-ANALYSIS พบบทพูด
+ห้ามเขียนว่า "No dialogue" เด็ดขาด
+⚠️ ถ้ามีตัวละครหลายคนในซีนเดียวกัน
+ต้องระบุให้ชัดว่าใครเป็นคนพูดแต่ละประโยค
+
+SCENE N DIALOGUE:
+- มีบทพูดไหม               : มี / ไม่มี
+- [ชื่อตัวละครที่พูด]        : "ประโยคที่พูด"
+  โทนเสียง                  : _______________
+  (whispered / shouted / calm / urgent /
+  trembling / confident / sarcastic / pleading)
+- [ชื่อตัวละครที่พูดคนที่ 2] : "ประโยคที่พูด" (ถ้ามี)
+  โทนเสียง                  : _______________
+
+(ทำซ้ำถ้ามีตัวละครพูดมากกว่า 2 คนในซีนเดียวกัน)
+
+▸ SCENE TRANSITION TABLE
+⚠️ กรอกทุกซีน ยกเว้นซีนสุดท้าย
+
+SCENE N → SCENE N+1 TRANSITION:
+- เหตุการณ์สุดท้ายของซีน N  : _______________
+- แรงจูงใจที่ส่งต่อ          : _______________
+- เหตุการณ์แรกของซีน N+1    : _______________
+- ระดับความต่อเนื่อง         : _______________
+  (Seamless / Time skip / Location cut)
+
+⚠️ ข้อมูลจาก SCENE TRANSITION TABLE
+ต้อง copy ไปวางใน Video Prompt ของซีน N
+ในส่วน Transition Anchor เสมอ
+
+▸ AUDIO TABLE
+⚠️ กรอกทุกซีน ห้ามเว้นว่าง
+ถ้ามีบทพูดในซีน ให้ระบุเฉพาะเสียงพื้นหลัง
+บทพูดจัดการแยกใน DIALOGUE TABLE อยู่แล้ว
+ห้ามใช้ชื่อเพลงหรือเพลงมีลิขสิทธิ์
+ถ้า Intent เกี่ยวกับความรุนแรง ให้เลี่ยงคำ เช่น:
+❌ gunshot / explosion blast
+✅ loud sudden impact sound / sharp percussive bang
+
+SCENE N AUDIO : _______________
+
+▸ TIME ELAPSED TABLE
+⚠️ กรอกเฉพาะถ้าคลิปเป็น Timelapse หรือ Before/After
+ถ้าไม่ใช่ ให้เขียนว่า "Not applicable"
+
+SCENE N TIME CONTEXT : _______________
+
+▸ CREATIVE ENHANCEMENT TABLE
+⚠️ นี่คือส่วนที่ AI ตัดสินใจเองทั้งหมด
+โดยอ้างอิงจาก OVERALL STORY ARC ใน PRE-ANALYSIS
+เป้าหมาย: ทำให้คลิปเราไม่ซ้ำต้นฉบับ 100%
+แต่ยังคง concept และโครงเรื่องหลักเดิม
+เพิ่มความ Amazing และ Viral potential
+โดยทุก enhancement ต้องผ่านเงื่อนไข 3 ข้อนี้:
+1. ดูสมจริง สมเหตุสมผล ดูเหมือนคนจริงทำ
+2. ไม่ทำลาย continuity หรือ logic ของเนื้อเรื่อง
+3. ไม่ผิดนโยบาย Google Flow
+
+AI เลือก enhancement จากหมวดด้านล่าง
+โดยระบุให้ชัดว่าเลือก enhancement ไหน
+และจะเพิ่มในซีนใดบ้าง:
+
+□ VISUAL HOOK ENHANCEMENT
+  เพิ่ม visual element ที่ทำให้ซีนแรกหยุดนิ้วได้ทันที
+  เช่น กล้อง extreme close-up ก่อน pull back reveal /
+  แสงดราม่า golden hour แทนแสงกลางวันธรรมดา /
+  ฉากหลังที่สวยงามมากขึ้นแต่ยังสมจริง
+  Enhancement ที่เลือก : _______________
+  ใส่ในซีน                : _______________
+
+□ EMOTIONAL AMPLIFIER
+  เพิ่มความเข้มข้นทางอารมณ์ในซีนสำคัญ
+  เช่น เพิ่ม pause ก่อน reaction ที่สำคัญ /
+  เพิ่ม micro-expression ที่บ่งบอกอารมณ์ลึกขึ้น /
+  เพิ่ม physical reaction ที่เป็นธรรมชาติ
+  Enhancement ที่เลือก : _______________
+  ใส่ในซีน                : _______________
+
+□ AMERICAN LIFESTYLE DETAIL
+  เพิ่มรายละเอียดที่ทำให้ดูอเมริกันมากขึ้น
+  เช่น สิ่งของใน background ที่เป็น American culture /
+  เสื้อผ้าหรือ accessories ที่ตรงกับ American aesthetic /
+  กิจกรรมหรือท่าทางที่ relate กับ American lifestyle
+  Enhancement ที่เลือก : _______________
+  ใส่ในซีน                : _______________
+
+□ CINEMATIC SURPRISE MOMENT
+  เพิ่ม 1 moment ที่ผู้ดูไม่คาดคิด แต่สมเหตุสมผล
+  เช่น unexpected reaction / funny accident /
+  satisfying reveal / wholesome moment
+  ⚠️ ต้องเป็น moment ที่ดู natural ไม่ forced
+  Enhancement ที่เลือก : _______________
+  ใส่ในซีน                : _______________
+
+⚠️ หลังเลือก enhancement ทั้งหมดแล้ว
+ให้ระบุในแต่ละ Image Prompt และ Video Prompt
+ของซีนที่มี enhancement ด้วยบรรทัดนี้:
+Creative Enhancement : [บรรยาย enhancement ที่เพิ่มเข้าไป]
+
+════════════════════════════════════
+STEP 0 — SELF-CHECK
+กรอก Locked Variables ครบแล้ว
+ต้องผ่าน 9 ข้อนี้ก่อนเขียน Prompt
+════════════════════════════════════
+
+AI ตอบคำถามทั้ง 9 ข้อนี้:
+
+1. PRE-ANALYSIS เสร็จสมบูรณ์ไหม?
+   DIALOGUE SCAN และ CAMERA MOVEMENT SCAN
+   ครบทุก shot ในคลิปไหม?
+   → ตอบ: ใช่ / ไม่ใช่ (ถ้าไม่ใช่ให้ทำก่อน)
+
+2. มุมกล้องแต่ละซีนใน COMPOSITION LOCK
+   มาจาก CAMERA MOVEMENT SCAN ทั้งหมดไหม?
+   ไม่มีซีนไหนที่ AI คิดมุมเองไหม?
+   → ตอบ: ใช่ / ไม่ใช่ (ถ้าไม่ใช่ให้แก้ก่อน)
+
+3. รูปทรงพื้นที่หลักตรงกับคลิปจริงไหม?
+   → ตอบ: ใช่ / ไม่ใช่ (ถ้าไม่ใช่ให้แก้ก่อน)
+
+4. PROP STATE TABLE ครบทุกวัตถุทุกซีนไหม?
+   → ตอบ: ใช่ / ไม่ใช่ (ถ้าไม่ใช่ให้เพิ่มก่อน)
+
+5. ถ้ามีตัวละคร — CHARACTER STATE TABLE
+   ระบุซีนที่สภาพเสื้อผ้าเปลี่ยนครบไหม?
+   → ตอบ: ใช่ / ไม่ใช่ / ไม่มีตัวละคร
+
+6. ถ้าเป็น Timelapse — TIME ELAPSED TABLE ครบไหม?
+   → ตอบ: ใช่ / ไม่ใช่ / ไม่ใช่ Timelapse
+
+7. DIALOGUE TABLE ใช้ข้อมูลจาก DIALOGUE SCAN
+   ทั้งหมดไหม? ไม่มีซีนไหนที่บอกว่า No dialogue
+   ทั้งที่ PRE-ANALYSIS พบบทพูดไหม?
+   → ตอบ: ใช่ / ไม่ใช่ / ไม่มีบทพูดในคลิป
+
+8. SCENE TRANSITION TABLE ครบทุกซีน
+   (ยกเว้นซีนสุดท้าย) ไหม?
+   → ตอบ: ใช่ / ไม่ใช่
+
+9. AUDIO TABLE ครบทุกซีน และ
+   CREATIVE ENHANCEMENT TABLE เลือก
+   enhancement ครบทุกหมวดไหม?
+   → ตอบ: ใช่ / ไม่ใช่
+
+⚠️ ถ้าข้อใดตอบว่า "ไม่ใช่"
+ให้แก้ไข Locked Variables ก่อน
+ห้ามเขียน Prompt จนกว่าจะผ่านทั้ง 9 ข้อ
+
+════════════════════════════════════
+กฎเหล็ก (CRITICAL RULES) — ห้ามละเมิดเด็ดขาด
+════════════════════════════════════
+
+✖ ห้ามอ้างอิงชื่อไฟล์ใดๆ ใน Prompt
+  ใช้คำบรรยาย Text ล้วน 100%
+
+✖ ห้ามบรรยายรูปลักษณ์ตัวละครซ้ำในแต่ละซีน
+  ให้ใช้ [CHARACTER REF] และ [STORYBOARD REF] แทน
+
+✖ ห้ามเปลี่ยนทรงเรขาคณิตของวัตถุระหว่างซีน
+
+✖ ห้าม Camera Cut ใน Video Prompt
+  ทุก Video Prompt ต้องเป็น single continuous shot
+  ห้ามใช้: cut to / then shows / next scene /
+  transition to
+
+✖ บังคับ Transition Anchor ท้าย Video Prompt
+  ทุกซีน (ยกเว้นซีนสุดท้าย)
+  โดย copy จาก SCENE TRANSITION TABLE:
+  "The final frame ends with [เหตุการณ์สุดท้าย]
+  [แรงจูงใจที่ส่งต่อ]
+  which serves as the starting frame for the next scene."
+
+✖ ห้าม AI เลือกมุมกล้องเองโดยไม่มีหลักฐานจากคลิป
+  ทุก shot ต้องมาจาก CAMERA MOVEMENT SCAN
+  ใน PRE-ANALYSIS เท่านั้น
+
+✖ ห้าม AI สร้างพื้นที่ว่างเป็นทรงกลม/วงรี
+  ถ้าคลิปต้นฉบับเป็นพื้นที่แนวยาวหรือเส้นตรง
+
+✖ ห้าม AI เพิ่มตัวประกอบที่ไม่มีในคลิปต้นฉบับ
+  ให้ยึดจาก BACKGROUND CHARACTERS TABLE เท่านั้น
+
+✖ CREATIVE ENHANCEMENT ต้องดูสมจริง
+  ห้ามใส่ enhancement ที่ดู AI-generated ชัดเจน
+  หรือดูไม่เป็นธรรมชาติ
+
+✖ GOOGLE FLOW SAFE
+  ห้ามใช้: voluptuous / curvy / sexy / seductive /
+  tight-fitting (บริบทรูปร่าง) / busty /
+  hourglass figure /
+  สัญชาติ + รูปร่าง + เสื้อผ้าพร้อมกัน /
+  kill / shoot / attack / threaten / stab
+  → ใช้คำกลางๆ แทนเสมอ
+
+✖ ถ้า Flow สร้างภาพผิด ให้แก้ด้วยวิธีนี้เท่านั้น:
+  "CORRECTION: The previous generation showed
+  [อธิบายสิ่งที่ผิด]. This must be fixed:
+  [อธิบายสิ่งที่ถูกต้อง].
+  Everything else remains exactly the same."
+
+════════════════════════════════════
+OUTPUT FORMAT — ส่ง 5 ชุด ตามลำดับ ห้ามปนกัน
+ห้ามใส่คำอธิบายหรือข้อความอื่นระหว่าง Prompt
+ส่งเฉพาะ Prompt ที่ copy ไปใช้ได้ทันทีเท่านั้น
+════════════════════════════════════
+
+- -- ชุดที่ 1: STORYBOARD PROMPT (1 คำสั่ง) ---
+
+## STORYBOARD PROMPT
+
+Create a single storyboard image only from this information
+
+(แนบไปพร้อม: Character Sheet เท่านั้น)
+[CHARACTER REF]: Match character appearance exactly
+from the attached Character Sheet image.
+[COMPOSITION LOCK]: [copy จาก COMPOSITION LOCK
+ที่กรอกไว้]
+
+Create a single {ASPECT RATIO} storyboard image divided
+into a grid of {TOTAL SCENES} panels arranged
+left-to-right, top-to-bottom. Each panel must have a
+small white number [1] through [{TOTAL SCENES}] in the
+top-left corner. All panels must share identical
+character appearance, lighting, and environment.
+Do not add any borders, titles, or labels other than
+the panel numbers.
+
+Panel 1 — [ชื่อซีน 1]
+Setting              : [Environment Lock ของซีนนี้
+                        — American aesthetic]
+Action               : [สิ่งที่ตัวละครกำลังทำ]
+Intent               : [copy จาก ACTION INTENT TABLE]
+Facial Expr          : [copy จาก ACTION INTENT TABLE]
+Body Lang            : [copy จาก ACTION INTENT TABLE]
+Background           : [copy จาก BACKGROUND CHARACTERS
+                        TABLE ซีน 1]
+Prop State           : [TYPE B — บรรยายวัตถุที่ปรากฏ]
+Creative Enhancement : [copy จาก CREATIVE ENHANCEMENT
+                        TABLE ถ้ามีในซีนนี้]
+Camera               : [copy มุมกล้องของซีน 1
+                        จาก COMPOSITION LOCK]
+Time                 : [copy จาก TIME ELAPSED TABLE ถ้ามี]
+
+Panel 2 — [ชื่อซีน 2]
+Setting              : [Environment Lock ของซีนนี้
+                        — American aesthetic]
+Action               : [สิ่งที่ตัวละครกำลังทำ]
+Intent               : [copy จาก ACTION INTENT TABLE]
+Facial Expr          : [copy จาก ACTION INTENT TABLE]
+Body Lang            : [copy จาก ACTION INTENT TABLE]
+Background           : [copy จาก BACKGROUND CHARACTERS
+                        TABLE ซีน 2]
+Prop State           : [TYPE A/B — บรรยายวัตถุ]
+Creative Enhancement : [copy จาก CREATIVE ENHANCEMENT
+                        TABLE ถ้ามีในซีนนี้]
+Camera               : [copy มุมกล้องของซีน 2
+                        จาก COMPOSITION LOCK]
+Time                 : [copy จาก TIME ELAPSED TABLE ถ้ามี]
+
+(ทำต่อจนครบ {TOTAL SCENES} Panel)
+--ar {ASPECT RATIO}
+
+# =================================
+The End of STORYBOARD PROMPTS
+# =================================
+
+- -- ชุดที่ 2: IMAGE PROMPTS ทั้งหมด {TOTAL SCENES} ซีน ---
+
+## Create all images from this information One separate image per scene.
+
+## SCENE 1 IMAGE PROMPT
+(แนบไปพร้อม: Character Sheet + ภาพ Storyboard)
+[CHARACTER REF]: Match character appearance exactly
+from the attached Character Sheet image.
+[STORYBOARD REF]: Match the visual style, lighting,
+environment, and composition of Panel 1 in the
+attached Storyboard image exactly.
+[COMPOSITION LOCK]: [copy จาก COMPOSITION LOCK
+ที่กรอกไว้]
+
+SCENE 1 — [ชื่อซีน]
+Action               : [อธิบายสิ่งที่ตัวละครกำลังทำ]
+Intent               : [copy Intent จาก ACTION INTENT
+                        TABLE ซีนนี้]
+Facial Expr          : [copy Facial Expr จาก
+                        ACTION INTENT TABLE]
+Eye Contact          : [copy Eye Contact จาก
+                        ACTION INTENT TABLE]
+Body Lang            : [copy Body Lang จาก
+                        ACTION INTENT TABLE]
+Background           : [copy จาก BACKGROUND CHARACTERS
+                        TABLE ซีนนี้]
+Prop State           : [TYPE B — New object: บรรยายวัตถุ]
+Char State           : [copy จาก CHARACTER STATE TABLE
+                        ซีนนี้ ถ้ามี]
+Lighting             : [copy จาก LIGHTING STATE TABLE]
+Creative Enhancement : [copy จาก CREATIVE ENHANCEMENT
+                        TABLE ถ้ามีในซีนนี้]
+Time                 : [copy จาก TIME ELAPSED TABLE ถ้ามี]
+Camera               : [copy มุมกล้องของซีน 1
+                        จาก COMPOSITION LOCK]
+--ar {ASPECT RATIO}
+
+---
+
+## SCENE 2 IMAGE PROMPT
+(แนบไปพร้อม: Character Sheet + ภาพ Storyboard
++ ภาพซีน 1)
+[CHARACTER REF]: Match character appearance exactly
+from the attached Character Sheet image.
+[STORYBOARD REF]: Match the visual style, lighting,
+environment, and composition of Panel 2 in the
+attached Storyboard image exactly.
+[PREV SCENE REF]: Match prop continuity exactly
+from the attached Scene 1 image.
+[COMPOSITION LOCK]: [copy จาก COMPOSITION LOCK
+ที่กรอกไว้]
+
+SCENE 2 — [ชื่อซีน]
+Action               : [อธิบายสิ่งที่ตัวละครกำลังทำ]
+Intent               : [copy Intent จาก ACTION INTENT
+                        TABLE ซีนนี้]
+Facial Expr          : [copy Facial Expr จาก
+                        ACTION INTENT TABLE]
+Eye Contact          : [copy Eye Contact จาก
+                        ACTION INTENT TABLE]
+Body Lang            : [copy Body Lang จาก
+                        ACTION INTENT TABLE]
+Background           : [copy จาก BACKGROUND CHARACTERS
+                        TABLE ซีนนี้]
+Prop State           : [TYPE A/B — บรรยายวัตถุ]
+Char State           : [copy จาก CHARACTER STATE TABLE
+                        ซีนนี้ ถ้ามี]
+Lighting             : [copy จาก LIGHTING STATE TABLE]
+Creative Enhancement : [copy จาก CREATIVE ENHANCEMENT
+                        TABLE ถ้ามีในซีนนี้]
+Time                 : [copy จาก TIME ELAPSED TABLE ถ้ามี]
+Camera               : [copy มุมกล้องของซีน 2
+                        จาก COMPOSITION LOCK]
+--ar {ASPECT RATIO}
+
+---
+
+(ทำรูปแบบเดิมต่อจนครบ {TOTAL SCENES} ซีน
+ซีน N แนบ: Character Sheet + Storyboard + ภาพซีน N-1)
+
+# =================================
+The End of IMAGE PROMPTS
+# =================================
+
+- -- ชุดที่ 3: VIDEO PROMPTS ทั้งหมด {TOTAL SCENES} ซีน ---
+
+## SCENE 1 VIDEO PROMPT
+(แนบไปพร้อม: ภาพซีน 1 ที่สร้างได้จากชุดที่ 2)
+[COMPOSITION LOCK]: [copy จาก COMPOSITION LOCK
+ที่กรอกไว้]
+8-second continuous single shot.
+Action               : [Action + physics +
+                        ทิศทางการเคลื่อนไหว]
+Intent               : [copy จาก ACTION INTENT TABLE
+                        รูปแบบ: "Character is [Intent],
+                        driven by [Emotion],
+                        expressed through
+                        [Facial Expr + Body Lang],
+                        therefore moving/acting
+                        by [Movement]"]
+Dialogue             : [copy จาก DIALOGUE TABLE
+                        ถ้ามีบทพูด:
+                        [ชื่อตัวละคร] says out loud:
+                        "[ประโยค]" in a [โทนเสียง] tone.
+                        ถ้ามีหลายคนพูด ระบุทีละคน
+                        ตามลำดับ
+                        ถ้าไม่มี: No dialogue.]
+Background           : [copy จาก BACKGROUND CHARACTERS
+                        TABLE ซีนนี้]
+Lighting             : [copy จาก LIGHTING STATE TABLE]
+Time                 : [copy จาก TIME ELAPSED TABLE ถ้ามี]
+Audio                : [copy จาก AUDIO TABLE ซีนนี้
+                        ถ้ามีบทพูด ให้ระบุเฉพาะ
+                        เสียงพื้นหลัง
+                        dialogue handled separately above]
+Creative Enhancement : [copy จาก CREATIVE ENHANCEMENT
+                        TABLE ถ้ามีในซีนนี้
+                        บรรยายวิธีแสดงออกใน video]
+Camera               : [copy มุมกล้องและ movement
+                        ของซีนนี้จาก COMPOSITION LOCK
+                        ต้องเป็น single continuous shot
+                        ไม่มี cut ตลอด 8 วินาที]
+The final frame ends with [copy เหตุการณ์สุดท้าย
+จาก SCENE TRANSITION TABLE] —
+[copy แรงจูงใจที่ส่งต่อ]
+which serves as the starting frame for the next scene.
+
+---
+
+(ทำรูปแบบเดิมต่อจนครบ {TOTAL SCENES} ซีน
+ซีนสุดท้ายไม่ต้องมี Transition Anchor)
+
+# =================================
+The End of VIDEO PROMPTS
+# =================================
+
+- -- ชุดที่ 4: THUMBNAIL PROMPT (1 คำสั่ง) ---
+
+## THUMBNAIL PROMPT
+(แนบไปพร้อม: Character Sheet เท่านั้น)
+[CHARACTER REF]: Match character appearance exactly
+from the attached Character Sheet image.
+
+Create a single ultra-high-impact thumbnail image
+designed to stop scrollers instantly on Facebook Reels
+targeting the US market. The image must feel cinematic,
+emotionally charged, and irresistibly clickable.
+
+Subject     : [บรรยายตัวละครหลักและสิ่งที่กำลังทำ
+               ณ จุดที่น่าสนใจที่สุดของคอนเทนต์]
+Composition : [วางตัวละครหลักชิดซ้ายหรือขวา 1/3
+               ของเฟรม ให้พื้นที่ว่างด้านตรงข้าม
+               สำหรับ visual tension]
+Expression  : [สีหน้าและอารมณ์ที่แรงที่สุด
+               ในคอนเทนต์]
+Key Visual  : [วัตถุหรือ prop ที่เป็นจุดสนใจหลัก]
+Lighting    : [แสงดราม่าสูง]
+Color Mood  : [โทนสีที่ดึงดูดสายตาที่สุด]
+Background  : [American suburban/lifestyle background
+               ที่เสริม visual impact
+               ไม่รกหรือรบกวนตัวละครหลัก]
+Style       : Cinematic photography, ultra-sharp focus
+              on subject, photorealistic, 8K quality,
+              highly dramatic and visually striking,
+              optimized for mobile vertical scroll,
+              American lifestyle aesthetic
+⚠️ ห้ามมีข้อความหรือตัวอักษรใดๆ ในภาพ
+⚠️ ห้ามผิดนโยบาย Google Flow เด็ดขาด
+--ar 9:16
+
+# =================================
+The End of THUMBNAIL PROMPT
+# =================================
+
+--- ชุดที่ 5: CAPTION & HASHTAGS ---
+
+## FACEBOOK CAPTION (US Market — SEO Optimized
+## & Policy-Safe)
+
+⚠️ FACEBOOK ALGORITHM SAFE WORDLIST
+ห้ามใช้คำเหล่านี้ในแคปชั่นเด็ดขาด เพราะ AI ของ Facebook
+มักตีความผิดว่าเกี่ยวข้องกับอุบัติเหตุ ความรุนแรง
+หรือเนื้อหาหลอกลวง:
+
+ห้ามใช้ → ใช้แทนด้วย
+scattered → loose / spread out
+sealed → coated / finished / protected
+unreal → incredible / breathtaking / stunning
+explosive → dramatic / powerful
+shocking → surprising / unexpected
+viral → (ห้ามใช้เป็นคำหรือแฮชแท็กเลย)
+
+⚠️ ห้ามใช้รูปแบบประโยคต่อไปนี้เด็ดขาด
+เพราะเข้าข่าย Clickbait / Watchbait / Engagement Bait
+ที่ Facebook ลด Reach โดยตรง:
+
+ห้าม: "...and the final result changed everything"
+ห้าม: "Watch till the end / Watch till the final reveal"
+ห้าม: "...and tell me which one you'd choose"
+ห้าม: "Drop a ❤️ if you'd try this"
+ห้าม: "Tag someone who needs to see this"
+ห้าม: คำถามตรงที่บังคับให้คนคอมเมนต์ตอบ
+
+✅ ใช้รูปแบบนี้แทน — บรรยายผลลัพธ์อย่างตรงไปตรงมา
+โดยให้ความน่าสนใจมาจากเนื้อหาเอง ไม่ใช่จากการ
+เรียกร้อง engagement
+
+Hook (1 ประโยค):
+[บรรยายสิ่งที่ทำให้คอนเทนต์นี้น่าสนใจ โดยใช้ภาษา
+ตรงไปตรงมา ไม่ใช้คำกระตุ้นแบบ Clickbait
+เช่น "I turned [ของเดิม] into [ผลลัพธ์]." /
+"This [วัตถุ] transformation took [ระยะเวลา]
+and completely changed the space."]
+
+Body (2-3 ประโยค):
+[อธิบายขั้นตอนหรือเทคนิคที่ใช้แบบกระชับ
+เน้นข้อมูลที่เป็นประโยชน์จริง ไม่ทิ้งปมแบบ Watchbait]
+
+Closing (1 ประโยค):
+[ปิดท้ายด้วยข้อความเชิงให้ข้อมูล ไม่ใช่คำสั่งให้ engage
+เช่น "More transformations like this coming soon." /
+"Simple materials, big difference." /
+"A small upgrade that changed how the room feels."]
+
+Hashtags (5 คำ):
+#[เกี่ยวข้องกับเนื้อหาจริง เฉพาะเจาะจง 1]
+#[เกี่ยวข้องกับเนื้อหาจริง เฉพาะเจาะจง 2]
+#[เกี่ยวข้องกับเนื้อหาจริง เฉพาะเจาะจง 3]
+#[เกี่ยวข้องกับ niche/หมวดหมู่คอนเทนต์ เช่น
+#DIYProjects #HomeTransformation — ไม่ใช่ #viral]
+#[ชื่อเพจ — ใส่เองตอนโพสต์]
+
+⚠️ Hashtag ทั้ง 5 ต้องเฉพาะเจาะจงกับเนื้อหาจริง
+ห้ามใช้ #viral หรือแฮชแท็กกว้างที่ไม่เกี่ยวกับเนื้อหา
+เพราะ Facebook จัดเป็น spam-bait pattern
+
+# =================================
+The End of CAPTION & HASHTAGS
+# =================================
+════════════════════════════════════
+เริ่มทำงานได้เลย
+ทำ PRE-ANALYSIS ก่อนทุกอย่าง
+จากนั้นทำ COMPLEXITY CHECK
+กรอก Locked Variables ให้ครบ
+ทำ SELF-CHECK ให้ผ่านทั้ง 9 ข้อ
+แล้วค่อยเขียน Prompt ทั้ง 5 ชุด
+════════════════════════════════════
+
+[END MASTER PROMPT v3.6]

@@ -155,9 +155,19 @@ async function _fillIdleSlotsInner(state) {
         // Determine phase from disk_status (more accurate than project_status)
         const effectiveStatus = project.disk_status || project.project_status;
         console.log(`[bg] slot[${i}] ← ${project.id} (${effectiveStatus})`);
-        const videosOnly    = effectiveStatus === 'images_done' ||
-                              effectiveStatus === 'videos_in_progress' ||
-                              effectiveStatus === 'videos_partial';
+        // A scene whose IMAGE file is missing on disk needs the image phase even when
+        // the reel's status would otherwise route it to videos — e.g. during manual
+        // review the user deleted a distorted scene's PNG (and its vdo) to redo it.
+        // Phase A is skipped automatically when the storyboard already exists, so this
+        // regenerates only the missing scene image(s); on imagesComplete the same slot
+        // auto-continues to the video phase and fills the matching missing vdo. Guarded
+        // by `=== false` so an old monitor without img_on_disk leaves routing unchanged.
+        const anyImageMissing  = Array.isArray(project.scenes) &&
+                                 project.scenes.some(s => s.img_on_disk === false);
+        const statusSaysVideos = effectiveStatus === 'images_done' ||
+                                 effectiveStatus === 'videos_in_progress' ||
+                                 effectiveStatus === 'videos_partial';
+        const videosOnly    = statusSaysVideos && !anyImageMissing;
         const scenesOnly    = effectiveStatus === 'storyboard_done'; // Phase A already done
         slot.phase    = videosOnly ? 'videos' : 'images';
         slot.progress = videosOnly ? 'Opening Google Flow...' : 'Opening ChatGPT...';
@@ -567,10 +577,16 @@ async function handleMessage(msg, sender) {
             return;
         }
 
-        // Pass effective status so chatgpt.js can skip Phase A when storyboard already exists
+        // Pass effective status so chatgpt.js can skip Phase A when storyboard already exists.
+        // chatgpt.js skips Phase A only when resumeFrom === 'storyboard_done', so map ANY
+        // past-storyboard status to that value. Without this, an image-redo on a
+        // 'videos_in_progress' reel would needlessly re-run Phase A and overwrite the
+        // storyboard (slow + style drift) instead of regenerating just the missing scene.
         const effectiveSt = project.disk_status || project.project_status;
+        const pastStoryboard = ['storyboard_done', 'images_done', 'videos_in_progress',
+                                'videos_partial', 'videos_done', 'complete'].includes(effectiveSt);
         const start = slot.phase === 'images'
-            ? { action: 'startImages', project, resumeFrom: effectiveSt }
+            ? { action: 'startImages', project, resumeFrom: pastStoryboard ? 'storyboard_done' : effectiveSt }
             : { action: 'startVideos', project };
 
         console.log(`[bg] tabReady tab=${tabId} → slot[${slot.idx}] ${slot.phase} project=${project.id}`);

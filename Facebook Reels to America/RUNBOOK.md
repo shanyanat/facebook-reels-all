@@ -72,12 +72,33 @@ That's it. Now generate reels in the extension as usual (3–5 in parallel is fi
 1. **Add briefs:** drop the `.txt` files into `pages/<page>/briefs/`.
    (New briefs get their caption captured automatically.)
 2. **Generate:** use the extension (images → videos), several reels at once.
-3. **Wait — it finishes itself:** when a reel's videos are all done, the computer
-   automatically archives it, edits it, and writes `caption.txt`. You may get a
-   Telegram message: "✅ Auto-advanced reel_XXXX — ready to post".
-4. **Post natively:** open `complete/<page>/<reel>/`, and in **Meta Business Suite**
+3. **Review (manual gate):** when a reel's videos are all done it now **stops in
+   `pages/<page>/working/` and waits for you** — it is NOT auto-archived. The reel
+   shows as **`videos done`** in the extension with an **Archive** button. You may get a
+   Telegram message: "🎬 Videos complete: reel_XXXX — left in working/ for review".
+   - **Looks good?** Click **Archive** on that reel, then click **📦 Collect** when
+     you've approved a batch. That moves them into `complete/<page>/`.
+   - **A scene's VIDEO looks distorted (image is fine)?** Delete just that clip in
+     `working/` — `reel_XXXX-scene-03-vdo.mp4`. The reel drops to **`videos in progress`**
+     (selectable). Re-run it; the extension regenerates ONLY that one video.
+   - **A scene's IMAGE is wrong (so the video is too)?** Delete BOTH files for that
+     scene — `reel_XXXX-scene-03.png` AND `reel_XXXX-scene-03-vdo.mp4`. The reel drops to
+     **`videos in progress`**; re-running it re-makes the scene images, then auto-continues
+     and remakes only the deleted scene's video. Your **other scenes' finished videos are
+     kept untouched**, so in the final reel only scene 03 effectively changes. (Deleting
+     only the `.png` keeps the reel at `videos done` because the old clip still counts —
+     delete both.)
+   - When the redo looks good, Archive + Collect as above.
+4. **Edit — it finishes itself:** once reels are in `complete/`, `editor_queue.py`
+   (tab 2) automatically renders each one (`EDITED_*.mp4`) and writes `caption.txt`.
+   You'll get "✅ Editor: complete/<page>/ — N reel(s) edited + caption, ready to post".
+5. **Post natively:** open `complete/<page>/<reel>/`, and in **Meta Business Suite**
    upload the `EDITED_*.mp4`, set `thumbnail.png` as the cover, paste `caption.txt`.
    Schedule them spread across the day. (We post by hand because API posting kills reach.)
+
+> Want the old hands-off behaviour back (auto archive→collect→caption the instant
+> videos finish)? Start tab 1 with `REELS_AUTO_ADVANCE=1` set, e.g. in PowerShell:
+> `$env:REELS_AUTO_ADVANCE=1; py monitor.py`
 
 ---
 
@@ -85,7 +106,7 @@ That's it. Now generate reels in the extension as usual (3–5 in parallel is fi
 
 | Command | When you use it | What it does |
 |---|---|---|
-| `py monitor.py` | **Every session** — tab 1, leave running | Generation side: saves images/videos, then archive + collect + caption. |
+| `py monitor.py` | **Every session** — tab 1, leave running | Generation side: saves images/videos. Finished reels **stop in `working/` for your review** — approve with the extension's Archive + Collect buttons. (Set `REELS_AUTO_ADVANCE=1` to auto archive+collect like before.) **On startup it auto-prunes** finished/posted reels out of the live `contents.json` so the extension's polls stay fast (set `REELS_AUTO_PRUNE=0` to skip). |
 | `py editor_queue.py` | **Every session** — tab 2, leave running | Editing side: renders each finished reel. Separate tab so logs stay clean. Safe alongside monitor. |
 | `py bot.py status` | Anytime you want to see progress | Shows every reel and what stage it's at. |
 | `py bot.py force-complete reel_XXXX` | A reel got stuck (e.g. 9 of 10 videos) and you accept it | Archives it + writes caption with whatever clips it has. **Does NOT edit** — `editor_queue.py` (tab 2) renders it next. Safe to run several at once. |

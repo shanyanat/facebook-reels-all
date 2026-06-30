@@ -544,12 +544,19 @@ def do_prune(apply: bool = False):
 
     A project is prunable only when it is BOTH:
       * project_status == "complete", AND
-      * its deliverables have been collected to complete/<page>/<reel>/ (folder exists).
+      * its deliverables have been collected to complete/<page>/<reel>/ — either the
+        plain folder OR the posted marker folder complete/<page>/<reel>.-/ (the '.-'
+        suffix you add once a reel is posted to the page).
 
     These entries are pure dead weight in contents.json — every scene-flag save
-    rewrites the whole file, so trimming it keeps writes fast and shrinks the
-    blast radius of any corruption. Pruned entries are appended to
-    data/contents.archive.json (never deleted), so nothing is lost.
+    rewrites the whole file, and monitor.py's /contents.json poll re-reads + disk-
+    stats every project, so a bloated file is the main cause of the extension's
+    intermittent "monitor.py not reachable" stalls. Trimming it keeps writes fast,
+    keeps polls responsive, and shrinks the blast radius of any corruption. Pruned
+    entries are appended to data/contents.archive.json (never deleted), so nothing
+    is lost — post_ready.py still finds their caption there, and _collect_reel_nums
+    still reserves their reel number from the folder on disk (so IDs never regress).
+    Pruning only removes the JSON entry; it never touches the '.-' folder itself.
 
     Dry-run by default — prints what it WOULD move and writes nothing.
     Pass apply=True (CLI: 'prune apply') to persist.
@@ -559,7 +566,10 @@ def do_prune(apply: bool = False):
     for p in contents:
         pid  = p["id"]
         page = p.get("page")
-        collected = bool(page and (COMPLETE_DIR / page / pid).exists())
+        collected = bool(page and (
+            (COMPLETE_DIR / page / pid).exists()
+            or (COMPLETE_DIR / page / f"{pid}.-").exists()   # posted-and-marked
+        ))
         if p.get("project_status") == "complete" and collected:
             to_prune.append(p)
         else:
