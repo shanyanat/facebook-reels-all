@@ -224,7 +224,10 @@ def do_archive(project_id: str):
         rf"^{re.escape(project_id)}-scene-(\d{{2}})-vdo\.mp4$", re.IGNORECASE
     )
     moved = 0
-    for f in sorted(working_dir.iterdir()):
+    # working/ may not exist (re-archiving an already-archived reel, or a reel whose
+    # files were generated/collected on another machine) — treat a missing dir as
+    # empty so archive degrades gracefully instead of crashing on iterdir().
+    for f in (sorted(working_dir.iterdir()) if working_dir.exists() else []):
         m = vdo_re.match(f.name)
         if m:
             dst = dest_dir / f"scene-{m.group(1)}.mp4"
@@ -237,7 +240,7 @@ def do_archive(project_id: str):
     # 4. Delete any remaining files for this project (scene PNGs, etc.)
     leftover_re = re.compile(rf"^{re.escape(project_id)}-", re.IGNORECASE)
     deleted = 0
-    for f in list(working_dir.iterdir()):
+    for f in (list(working_dir.iterdir()) if working_dir.exists() else []):
         if leftover_re.match(f.name):
             f.unlink()
             deleted += 1
