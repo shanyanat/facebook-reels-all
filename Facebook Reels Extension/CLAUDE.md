@@ -38,6 +38,20 @@ flow.js     videos (UNCHANGED)
 
 DOM mechanics are ported from the proven `Facebook Reels Extension for Multi Analyze/content-gemini.js` (selectors locked live 2026-06-27): composer `.ql-editor[contenteditable="true"]`, model pill `button[aria-label^="Open mode picker"]`, menu rows matched **by text**, upload by synthetic `ClipboardEvent` paste, busy = stop button aria "Stop response". **Do not** key off `[role="progressbar"]` — Gemini keeps one mounted permanently and `isGenerating()` would stick true forever.
 
+#### `ensureProExtended()` must handle TWO menu layouts (fixed 2026-07-13)
+
+Both **3.1 Pro** *and* **Extended thinking** have to end up selected. There are two layouts in the wild, and assuming the wrong one fails **silently** — Pro gets set, thinking quietly stays on Standard, and every image in the reel is generated at the wrong level with nothing in the output to show it:
+
+- **FLAT** — `3.1 Pro` and `Extended thinking` are both direct items in the mode-picker menu. (What this account shows.)
+- **NESTED** — `Extended` sits in a submenu under a `Thinking level` row. (What Multi Analyze was built against.)
+
+The ported code only knew NESTED: it looked for a "Thinking level" row, didn't find one, logged a warning, and gave up. `ensureProExtended()` now tries the flat item first, falls back to the submenu, and **verifies both are checked afterwards** (`verifyModeSelection()`) rather than assuming the clicks landed. It logs `Model check → 3.1 Pro: ON | Extended thinking: ON` every run — if either says `NOT SET`, it dumps the menu so the selector can be re-locked.
+
+Two traps encoded in the code:
+
+- **Selection state comes from `aria-checked`/`aria-selected`, not from text.** The item is literally *named* "Extended thinking", so any `textContent.includes('extended')` check is always true and would wrongly conclude "already on".
+- **A `Thinking level` ROW also contains the word "Extended"** once Extended is its current value. So `findItem(/extended/i)` alone can match the row instead of the option — every lookup excludes the row (`findItem(EXTENDED_OPT, THINKING_ROW)`). Never click an already-checked Extended: on a toggle that switches it back **off**.
+
 What is **new** (that script only ever extracted *text*):
 
 - **One scene per message, in ONE chat.** Gemini cannot be asked for 10 images at once. Each scene attaches the **character sheet + storyboard + the previous scene's image (N-1)**; the N-1 chain is what holds the look together. If a scene fails, the chain keeps the last scene that *did* work rather than resetting.
