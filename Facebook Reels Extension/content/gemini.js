@@ -77,6 +77,14 @@ const SELECTORS = {
         '.send-button-container button',
         'button.send-button',
     ],
+    // The "+" next to the composer. Confirmed live as aria "Upload & tools" — it opens
+    // the menu holding both "Upload files" and the "Create image" tool.
+    plus: [
+        'button[aria-label="Upload & tools"]',
+        'button[aria-label*="upload" i][aria-label*="tool" i]',
+        'button[aria-label*="add files" i]',
+        'button[aria-label*="upload" i]',
+    ],
     response: [
         '.model-response-text',
         'message-content',
@@ -326,6 +334,61 @@ function dismissOnboarding() {
     const card = Array.from(document.querySelectorAll('button'))
         .find(b => /Acknowledge and close the discovery card/i.test(b.getAttribute('aria-label') || ''));
     if (card && isVisible(card)) { try { card.click(); } catch {} }
+}
+
+// ── Image mode ("+" → Create image) ───────────────────────────────────────────
+//
+// Put Gemini into image-generation mode before choosing the model, the same way
+// chatgpt.js calls activateImageMode(). The "+" menu is an Angular overlay, so like
+// the mode picker it only renders in a FOREGROUND tab — which is why this is called
+// inside the UI turn.
+
+const CREATE_IMAGE = /create image|image generation|generate image|สร้างภาพ|สร้างรูป/i;
+
+// Once the tool is on, Gemini shows a chip/pill near the composer. Look for it OUTSIDE
+// the conversation, so past messages mentioning images can't be mistaken for it.
+function imageModeActive() {
+    return Array.from(document.querySelectorAll('button, [role="button"], [class*="chip"], [class*="pill"]'))
+        .some(el => !inChat(el) && isVisible(el) &&
+                    CREATE_IMAGE.test(itemText(el) + ' ' + (el.getAttribute('aria-label') || '')));
+}
+
+// Idempotent: never clicks "Create image" when it is already on — on a toggle that
+// would switch image mode back OFF.
+async function activateImageMode() {
+    if (imageModeActive()) { log('✓ Image mode already on'); return true; }
+
+    const plus = pick(SELECTORS.plus);
+    if (!plus) { log('WARNING: "+" (Upload & tools) button not found — skipping image mode'); return false; }
+
+    plus.click();
+    const end = Date.now() + 5000;
+    while (Date.now() < end && !menuItems().length) await sleep(200);
+    await sleep(300);
+
+    if (!menuItems().length) {
+        log('WARNING: "+" menu did not open (background tab?) — skipping image mode');
+        pressEscape();
+        return false;
+    }
+    dumpMenu('plus-menu');
+
+    // Must not match "Upload files", which lives in the same menu.
+    const item = findItem(CREATE_IMAGE, /upload/i);
+    if (!item) {
+        log('WARNING: "Create image" not found in the "+" menu — dumping it so the ' +
+            'selector can be re-locked:');
+        dumpMenu('create-image-missing');
+        pressEscape();
+        await sleep(300);
+        return false;
+    }
+
+    item.click();
+    await sleep(1200);
+    const on = imageModeActive();
+    log(on ? '✓ Image mode: Create image' : 'WARNING: clicked "Create image" but no chip appeared');
+    return on;
 }
 
 // A "Thinking level" ROW also contains the word "Extended" when Extended is its current
@@ -747,6 +810,16 @@ async function generateOne(refs, promptText, filename) {
     await clearAttachments();
     await clearComposer();
 
+    // Image mode is set once at startup, but if Gemini clears it after a send then
+    // scenes 2..N would silently fall back to normal chat. Re-enable when it's off —
+    // this needs a UI turn because the "+" menu won't render in a background tab.
+    // A no-op when the mode sticks (the common case), so it costs nothing then.
+    if (!imageModeActive()) {
+        log('Image mode is off — re-enabling');
+        await acquireUiTurn();
+        try { await activateImageMode(); } finally { releaseUiTurn(); }
+    }
+
     // 1. Attach every reference for this turn, and CONFIRM each one landed.
     const refPrints = new Set();
     for (const ref of refs) {
@@ -807,12 +880,15 @@ async function runGeminiImages(project) {
 
     if (DIAG === 'image') { dumpImageDom(); return; }
 
-    // Model set-up needs the tab in the foreground (Angular overlay). Take a turn.
+    // Image mode + model both open Angular overlays, which only render in a FOREGROUND
+    // tab. Take a UI turn so this tab is foregrounded for the few seconds it needs.
     report('Gemini: waiting for UI turn...');
     await acquireUiTurn();
     try {
-        report('Gemini: setting model (3.1 Pro + Extended)...');
         dismissOnboarding();
+        report('Gemini: switching to image mode...');
+        await activateImageMode();          // "+" → Create image, BEFORE picking the model
+        report('Gemini: setting model (3.1 Pro + Extended)...');
         await ensureProExtended();
     } finally {
         releaseUiTurn();

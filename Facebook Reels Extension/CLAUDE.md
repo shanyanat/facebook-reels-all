@@ -38,6 +38,19 @@ flow.js     videos (UNCHANGED)
 
 DOM mechanics are ported from the proven `Facebook Reels Extension for Multi Analyze/content-gemini.js` (selectors locked live 2026-06-27): composer `.ql-editor[contenteditable="true"]`, model pill `button[aria-label^="Open mode picker"]`, menu rows matched **by text**, upload by synthetic `ClipboardEvent` paste, busy = stop button aria "Stop response". **Do not** key off `[role="progressbar"]` — Gemini keeps one mounted permanently and `isGenerating()` would stick true forever.
 
+#### Setup order: image mode FIRST, then the model (2026-07-13)
+
+Inside the UI turn, `gemini.js` does `activateImageMode()` **before** `ensureProExtended()` — the "+" next to the composer (aria `Upload & tools`) → **Create image**. Same idea as `chatgpt.js`'s `activateImageMode()`: putting Gemini in image-generation mode before choosing the model gives better images.
+
+Both the "+" menu and the mode picker are **Angular overlays that do not render in a background tab**, which is exactly why both run inside the UI turn (the tab is foregrounded for those few seconds).
+
+Two traps, both silent if got wrong:
+
+- **"Upload files" lives in the same "+" menu.** The lookup excludes it (`findItem(CREATE_IMAGE, /upload/i)`), or the bot would open a file dialog instead of enabling image mode.
+- **"Create image" is a TOGGLE.** Clicking it when it is already on switches image mode back **off**. `activateImageMode()` is therefore idempotent: it checks `imageModeActive()` (the chip near the composer, looked for *outside* the conversation so an old message mentioning images can't be mistaken for it) and returns immediately when already on.
+
+`generateOne()` re-checks `imageModeActive()` at the start of every turn and re-enables it (taking a UI turn) only if Gemini dropped it after a send — otherwise scenes 2..N would silently fall back to normal chat. When the mode sticks, this is a no-op and costs nothing.
+
 #### `ensureProExtended()` must handle TWO menu layouts (fixed 2026-07-13)
 
 Both **3.1 Pro** *and* **Extended thinking** have to end up selected. There are two layouts in the wild, and assuming the wrong one fails **silently** — Pro gets set, thinking quietly stays on Standard, and every image in the reel is generated at the wrong level with nothing in the output to show it:
