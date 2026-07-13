@@ -74,6 +74,15 @@ body {
 .slot-btn:hover:not(:disabled) { border-color: #1a73e8; color: #1a73e8; }
 .slot-btn.active { background: #1a73e8; border-color: #1a73e8; color: white; }
 .slot-btn:disabled { opacity: 0.45; cursor: default; }
+.engine-row { display: flex; align-items: center; gap: 6px; width: 100%; margin-bottom: 6px; }
+.engine-btns { display: flex; gap: 3px; }
+.engine-btn {
+  padding: 4px 9px; font-size: 11px; font-weight: 600; cursor: pointer;
+  border: 1px solid #dadce0; border-radius: 5px; background: white; color: #3c4043;
+}
+.engine-btn:hover:not(:disabled) { border-color: #1a73e8; color: #1a73e8; }
+.engine-btn.active { background: #1a73e8; border-color: #1a73e8; color: white; }
+.engine-btn:disabled { opacity: 0.45; cursor: default; }
 .spacer { flex: 1; }
 .btn {
   padding: 7px 16px; border-radius: 20px; border: none;
@@ -376,6 +385,15 @@ body {
 
 <!-- Controls -->
 <div class="card controls">
+  <!-- Image engine. ChatGPT = every image on ChatGPT (original).
+       Hybrid = storyboard on ChatGPT, scenes + thumbnail on Gemini (saves ChatGPT quota). -->
+  <div class="engine-row">
+    <span class="slots-label">Images:</span>
+    <div class="engine-btns">
+      <button class="engine-btn" id="engine-btn-chatgpt" data-engine="chatgpt">ChatGPT</button>
+      <button class="engine-btn" id="engine-btn-hybrid"  data-engine="hybrid">ChatGPT + Gemini</button>
+    </div>
+  </div>
   <span class="slots-label">Slots:</span>
   <div class="slot-btns">
     <button class="slot-btn" data-slots="1">1</button>

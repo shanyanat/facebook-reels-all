@@ -47,7 +47,11 @@ function defaultState() {
         selectedIds: [],
         consecutiveErrors: 0,   // reset by any success; trips the circuit breaker
         recentErrors: [],       // [{id, message, at}] — kept so the UI can show failures
-        pausedReason: ''        // set when the breaker pauses the run; '' otherwise
+        pausedReason: '',       // set when the breaker pauses the run; '' otherwise
+        // 'chatgpt' = every image on ChatGPT (the original path).
+        // 'hybrid'  = storyboard on ChatGPT, scenes + thumbnail on Gemini (cheap on
+        //             ChatGPT image quota: 1 image per reel instead of 12).
+        imageEngine: 'chatgpt'
     };
 }
 
@@ -58,6 +62,9 @@ async function loadState() {
     if (typeof state.consecutiveErrors !== 'number') state.consecutiveErrors = 0;
     if (!Array.isArray(state.recentErrors)) state.recentErrors = [];
     if (typeof state.pausedReason !== 'string') state.pausedReason = '';
+    // Default to the original pure-ChatGPT behaviour for any state saved before the
+    // hybrid engine existed.
+    if (state.imageEngine !== 'hybrid') state.imageEngine = 'chatgpt';
     if (state.slots.length < MAX_SLOT_COUNT) {
         while (state.slots.length < MAX_SLOT_COUNT) {
             state.slots.push(freshSlot(state.slots.length));
@@ -71,6 +78,51 @@ async function saveState(state) {
     await chrome.storage.local.set({ [STORAGE_KEY]: state });
     chrome.runtime.sendMessage({ action: 'stateUpdate', state }).catch(() => {});
 }
+
+// ── UI turn (Gemini model picker) ─────────────────────────────────────────────
+// Gemini's mode picker is an Angular overlay that does NOT render in a background
+// tab, so a tab must be foregrounded while it sets 3.1 Pro + Extended. Grant that
+// to ONE tab at a time: because turns are exclusive, tabs never fight for focus.
+// The pastes and the generation itself are background-safe and stay parallel.
+let _uiHolder = null;          // tabId currently holding the turn
+const _uiQueue = [];           // waiting tabIds (FIFO)
+let _uiAutoRelease = null;
+
+function _grantUi(tabId) {
+    _uiHolder = tabId;
+    chrome.tabs.update(tabId, { active: true })
+        .then(t => { if (t?.windowId != null) chrome.windows.update(t.windowId, { focused: true }).catch(() => {}); })
+        .catch(() => {});
+    chrome.tabs.sendMessage(tabId, { action: 'uiGranted' }).catch(() => {});
+    clearTimeout(_uiAutoRelease);
+    // Backstop for a WEDGED tab only. A slow tab is not a dead tab — a short timer
+    // here would hand the turn away mid-menu and reintroduce the contention this
+    // exists to remove. A genuinely closed tab is released instantly by onRemoved.
+    _uiAutoRelease = setTimeout(() => _releaseUi(tabId, true), 600000);
+}
+
+function _releaseUi(tabId, isAuto) {
+    if (_uiHolder !== tabId && !isAuto) return;   // stale release — ignore
+    clearTimeout(_uiAutoRelease);
+    _uiAutoRelease = null;
+    if (_uiQueue.length) _grantUi(_uiQueue.shift());
+    else _uiHolder = null;
+}
+
+function _resetUiLock() {
+    _uiHolder = null;
+    _uiQueue.length = 0;
+    clearTimeout(_uiAutoRelease);
+    _uiAutoRelease = null;
+}
+
+// A closed/crashed tab frees its turn immediately, so the queue never stalls trying
+// to message a dead tab.
+chrome.tabs.onRemoved.addListener(tabId => {
+    const qi = _uiQueue.indexOf(tabId);
+    if (qi >= 0) _uiQueue.splice(qi, 1);
+    if (_uiHolder === tabId) _releaseUi(tabId, true);
+});
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -86,6 +138,26 @@ async function patchProject(id, fields) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, ...fields })
     });
+}
+
+// Which site each phase runs on.
+const PHASE_URL = {
+    videos:          'https://labs.google/fx/th/tools/flow',
+    images:          'https://chatgpt.com/',
+    storyboard:      'https://chatgpt.com/',
+    'images-gemini': 'https://gemini.google.com/app'
+};
+
+// Disk truth, not status: does this reel's storyboard PNG exist? Decides whether a
+// hybrid reel still needs ChatGPT (Phase A) or can go straight to Gemini.
+async function hasStoryboard(project) {
+    try {
+        const res = await fetch(
+            `${API}/file/pages/${project.page}/working/${project.id}-storyboard.png`,
+            { cache: 'no-store' }
+        );
+        return res.ok;
+    } catch { return false; }
 }
 
 // ── Slot management ───────────────────────────────────────────────────────────
@@ -168,15 +240,34 @@ async function _fillIdleSlotsInner(state) {
                                  effectiveStatus === 'videos_in_progress' ||
                                  effectiveStatus === 'videos_partial';
         const videosOnly    = statusSaysVideos && !anyImageMissing;
-        const scenesOnly    = effectiveStatus === 'storyboard_done'; // Phase A already done
-        slot.phase    = videosOnly ? 'videos' : 'images';
-        slot.progress = videosOnly ? 'Opening Google Flow...' : 'Opening ChatGPT...';
+
+        // In hybrid mode the image work splits across two tools, so the image phase
+        // becomes two phases. Which one this reel needs is decided by whether the
+        // storyboard is already on disk — NOT by project_status, because an image-redo
+        // (user deleted a distorted scene's PNG) leaves the reel at videos_in_progress
+        // while its storyboard is long done. Asking disk directly means such a reel
+        // goes straight to Gemini and never needlessly re-runs Phase A.
+        let phase;
+        if (videosOnly) {
+            phase = 'videos';
+        } else if (state.imageEngine === 'hybrid') {
+            phase = (await hasStoryboard(project)) ? 'images-gemini' : 'storyboard';
+        } else {
+            phase = 'images';
+        }
+        slot.phase = phase;
+        slot.progress = {
+            videos:          'Opening Google Flow...',
+            storyboard:      'Opening ChatGPT (storyboard)...',
+            'images-gemini': 'Opening Gemini...',
+            images:          'Opening ChatGPT...'
+        }[phase];
 
         // Remove from selection queue now that it is assigned
         state.selectedIds = (state.selectedIds || []).filter(id => id !== project.id);
         await saveState(state);
 
-        const tabUrl = videosOnly ? 'https://labs.google/fx/th/tools/flow' : 'https://chatgpt.com/';
+        const tabUrl = PHASE_URL[phase];
         const tab = await chrome.tabs.create({ url: tabUrl, active: false });
         // Stop Chrome's Memory Saver from freezing/discarding this background tab —
         // a discarded tab's automation loop stalls (only the visible tab keeps running).
@@ -486,9 +577,92 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async
 });
 
+// ── saveGeminiImage: Gemini's generated image → a real PNG in working/ ─────────
+//
+// Two sources, one exit:
+//   * https://…googleusercontent.com/…  — fetched HERE in the service worker, which
+//     has the host permission, so no page CORS applies. (Needs
+//     "https://*.googleusercontent.com/*" in manifest host_permissions.)
+//   * blob:/data:                        — a blob: URL is scoped to the PAGE's origin
+//     and is NOT fetchable from the service worker, so gemini.js reads those bytes
+//     itself and sends them as base64.
+//
+// Everything is then re-encoded to a REAL PNG. monitor.py's /save_image validates the
+// *filename* and never looks at the body, so a WebP/JPEG saved under a .png name would
+// sail through and only blow up later when Flow tries to use it as a first frame.
+//
+// It also drops any image whose bytes match a reference we just attached: monitor.py's
+// own 409 guard knows the storyboard + character sheet, but NOT the previous-scene
+// image this engine attaches — and that is the one that would silently write scene N
+// with scene N-1's pixels.
+//
+// NOTE: deliberately never uses chrome.downloads — monitor.py's DownloadsHandler
+// watches ~/Downloads for these exact filenames and would double-write state.
+function fingerprintBytes(bytes) {
+    let h = 0;
+    for (let i = 0; i < bytes.length; i += 97) h = (h * 31 + bytes[i]) >>> 0;
+    return `${bytes.length}:${h}`;
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action !== 'saveGeminiImage') return false;
+
+    (async () => {
+        try {
+            let bytes;
+            if (msg.base64) {
+                const bin = atob(msg.base64);
+                bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            } else {
+                const res = await fetch(msg.url);
+                if (!res.ok) throw new Error(`fetch ${res.status}`);
+                bytes = new Uint8Array(await res.arrayBuffer());
+            }
+
+            const refPrints = new Set(msg.refPrints || []);
+            if (refPrints.has(fingerprintBytes(bytes))) {
+                sendResponse({ ok: false, error: 'captured image is an attached reference, not new output' });
+                return;
+            }
+
+            // Re-encode to a real PNG regardless of what Gemini served.
+            const bitmap = await createImageBitmap(new Blob([bytes]));
+            const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+            canvas.getContext('2d').drawImage(bitmap, 0, 0);
+            const pngBlob = await canvas.convertToBlob({ type: 'image/png' });
+            const png = new Uint8Array(await pngBlob.arrayBuffer());
+            bitmap.close();
+
+            const CHUNK = 8192;
+            let s = '';
+            for (let i = 0; i < png.length; i += CHUNK) {
+                s += String.fromCharCode.apply(null, png.subarray(i, Math.min(i + CHUNK, png.length)));
+            }
+
+            const save = await fetch(`${API}/save_image`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: msg.filename, base64: btoa(s) })
+            });
+            if (!save.ok) {
+                const txt = await save.text().catch(() => '');
+                throw new Error(`save_image ${save.status} ${txt}`);
+            }
+            sendResponse({ ok: true, size: png.length });
+        } catch (e) {
+            console.error('[bg] saveGeminiImage:', e);
+            sendResponse({ ok: false, error: String(e.message || e) });
+        }
+    })();
+
+    return true; // async
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'fillSlate' || msg.action === 'clickGenerateSlate' ||
-        msg.action === 'injectFileUpload' || msg.action === 'pressEnterCompose') return false; // handled by dedicated listeners above
+        msg.action === 'injectFileUpload' || msg.action === 'pressEnterCompose' ||
+        msg.action === 'saveGeminiImage') return false; // handled by dedicated listeners above
     (async () => {
         try {
             await handleMessage(msg, sender);
@@ -516,6 +690,10 @@ async function handleMessage(msg, sender) {
         state.consecutiveErrors = 0;   // fresh start clears the breaker + pause banner
         state.pausedReason = '';
         if (msg.maxSlots) state.maxSlots = Math.min(msg.maxSlots, MAX_SLOT_COUNT);
+        if (msg.imageEngine === 'hybrid' || msg.imageEngine === 'chatgpt') {
+            state.imageEngine = msg.imageEngine;
+        }
+        _resetUiLock();   // a fresh run must not inherit a stale UI turn
         await saveState(state);
         await fillIdleSlots(state);
         return;
@@ -585,15 +763,43 @@ async function handleMessage(msg, sender) {
         const effectiveSt = project.disk_status || project.project_status;
         const pastStoryboard = ['storyboard_done', 'images_done', 'videos_in_progress',
                                 'videos_partial', 'videos_done', 'complete'].includes(effectiveSt);
-        const start = slot.phase === 'images'
-            ? { action: 'startImages', project, resumeFrom: pastStoryboard ? 'storyboard_done' : effectiveSt }
-            : { action: 'startVideos', project };
+        const resumeFrom = pastStoryboard ? 'storyboard_done' : effectiveSt;
+
+        // 'storyboard' is the hybrid engine's Phase A: the SAME chatgpt.js image phase,
+        // told to stop once the storyboard is saved and hand off to Gemini.
+        // resumeFrom is forced to 'pending' here: a reel only gets this phase because
+        // hasStoryboard() found no PNG on disk, so Phase A MUST run. Passing the
+        // status-derived resumeFrom would let a stale 'storyboard_done' skip Phase A and
+        // hand Gemini a reel with no storyboard (exactly the case where the user deleted
+        // the storyboard to regenerate it).
+        let start;
+        if (slot.phase === 'images') {
+            start = { action: 'startImages', project, resumeFrom };
+        } else if (slot.phase === 'storyboard') {
+            start = { action: 'startImages', project, resumeFrom: 'pending', stopAfterStoryboard: true };
+        } else if (slot.phase === 'images-gemini') {
+            start = { action: 'startGeminiImages', project };
+        } else {
+            start = { action: 'startVideos', project };
+        }
 
         console.log(`[bg] tabReady tab=${tabId} → slot[${slot.idx}] ${slot.phase} project=${project.id}`);
 
         chrome.tabs.sendMessage(tabId, start).catch(e =>
             console.error(`[bg] sendMessage to tab ${tabId} failed:`, e)
         );
+        return;
+    }
+
+    if (msg.action === 'acquireUi') {
+        if (!tabId) return;
+        if (_uiHolder === null) _grantUi(tabId);
+        else if (_uiHolder !== tabId && !_uiQueue.includes(tabId)) _uiQueue.push(tabId);
+        return;
+    }
+
+    if (msg.action === 'releaseUi') {
+        if (tabId) _releaseUi(tabId, false);
         return;
     }
 
@@ -647,6 +853,52 @@ async function handleMessage(msg, sender) {
             conflictAction: 'overwrite',
             saveAs: false
         });
+        return;
+    }
+
+    // Hybrid engine: ChatGPT finished the storyboard. Hand the SAME slot over to a
+    // Gemini tab for the scene images + thumbnail. Mirrors imagesComplete's tab hop.
+    if (msg.action === 'storyboardComplete') {
+        const state = await loadState();
+        const slot = state.slots.find(s => s.tabId === tabId);
+        if (!slot) return;
+
+        state.consecutiveErrors = 0;   // the storyboard landed — reset the breaker
+        slot.phase = 'images-gemini';
+        slot.progress = 'Opening Gemini...';
+        await saveState(state);
+
+        const newTab = await chrome.tabs.create({
+            url: PHASE_URL['images-gemini'],
+            active: false
+        });
+        chrome.tabs.update(newTab.id, { autoDiscardable: false }).catch(() => {});
+        try { await chrome.tabs.remove(tabId); } catch {}
+        slot.tabId = newTab.id;
+        await saveState(state);
+        return;
+    }
+
+    // Gemini throttled us. gemini.js already backed off and gave up for now WITHOUT
+    // dropping or penalising any scene, so the reel is left at its real progress —
+    // re-running it in hybrid mode resumes exactly where it stopped (scenes already
+    // on disk are skipped). Same shape as videosRateLimited below.
+    if (msg.action === 'imagesRateLimited') {
+        const state = await loadState();
+        const slot = state.slots.find(s => s.tabId === tabId);
+        if (!slot) return;
+
+        try { await chrome.tabs.remove(tabId); } catch {}
+        Object.assign(slot, freshSlot(slot.idx));
+        slot.status = 'done';
+        slot.progress = '⚠ Gemini rate limited — re-run later to finish';
+        await saveState(state);
+
+        if (state.running) {
+            slot.status = 'idle';
+            slot.progress = '';
+            await fillIdleSlots(state);
+        }
         return;
     }
 

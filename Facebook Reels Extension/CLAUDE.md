@@ -2,17 +2,92 @@
 
 ## What This Extension Does
 
-A Chrome MV3 extension that automates ChatGPT to generate scene images for Facebook Reels projects. It runs as a side panel, reads project data from `http://localhost:7788` (monitor.py), and attaches image files to ChatGPT's compose area via React fiber injection.
+A Chrome MV3 extension that automates ChatGPT (and optionally Gemini) to generate scene images for Facebook Reels projects. It runs as a side panel, reads project data from `http://localhost:7788` (monitor.py), and attaches image files to ChatGPT's compose area via React fiber injection.
+
+## Image engine: ChatGPT or ChatGPT + Gemini (added 2026-07-13)
+
+An **Images** toggle at the top of the side panel picks who draws the images:
+
+| Engine | Storyboard | 10 scene images + thumbnail | ChatGPT images per reel |
+|---|---|---|---|
+| `chatgpt` (default) | ChatGPT | ChatGPT | **12** |
+| `hybrid` | ChatGPT | **Gemini** (3.1 Pro + Extended) | **1** |
+
+**Why:** 12 images per reel burns the ChatGPT image quota in a few reels and generation then stops for the rest of the window. Gemini's quality is slightly below ChatGPT's but acceptable, and it does not touch the ChatGPT quota. Gemini makes *poor storyboards*, so the storyboard stays on ChatGPT — that is the whole reason this is a hybrid and not a straight swap.
+
+The engine is stored on the existing state object as `reel_gen_state.imageEngine` and defaults to `'chatgpt'`, so state saved before this feature existed keeps the original behaviour. It cannot be changed mid-run (the buttons disable while running).
+
+### Hybrid flow
+
+```
+fillIdleSlots (background.js)
+  hybrid + no storyboard PNG on disk → phase 'storyboard'     → chatgpt.com
+  hybrid + storyboard PNG on disk    → phase 'images-gemini'  → gemini.google.com/app
+
+chatgpt.js  Phase A (storyboard) → 'storyboardComplete'  ─┐
+                                                          ├→ background hops the SAME slot
+gemini.js   scenes 1..N + thumbnail → 'imagesComplete'   ─┘   to a Gemini tab, then to Flow
+flow.js     videos (UNCHANGED)
+```
+
+`slot.phase` routing is decided from **disk truth** (`hasStoryboard()` fetches the PNG from monitor.py), not from `project_status`. This matters for the image-redo path: a reel sitting at `videos_in_progress` whose scene PNG the user deleted already has its storyboard, so it goes straight to Gemini and never re-runs Phase A. Conversely, a reel routed to `'storyboard'` gets `resumeFrom: 'pending'` forced, because it only got that phase when the PNG is genuinely absent — a stale `storyboard_done` status must not skip Phase A there.
+
+**Gemini writes the exact same filenames** (`reel_XXXX-scene-NN.png`, `reel_XXXX-thumbnail.png`) to the same `/save_image` endpoint, so `flow.js`, `monitor.py`, `bot.py` and the editor are **completely unchanged** by this feature. That is the design's whole point.
+
+### `content/gemini.js` — what is ported and what is new
+
+DOM mechanics are ported from the proven `Facebook Reels Extension for Multi Analyze/content-gemini.js` (selectors locked live 2026-06-27): composer `.ql-editor[contenteditable="true"]`, model pill `button[aria-label^="Open mode picker"]`, menu rows matched **by text**, upload by synthetic `ClipboardEvent` paste, busy = stop button aria "Stop response". **Do not** key off `[role="progressbar"]` — Gemini keeps one mounted permanently and `isGenerating()` would stick true forever.
+
+What is **new** (that script only ever extracted *text*):
+
+- **One scene per message, in ONE chat.** Gemini cannot be asked for 10 images at once. Each scene attaches the **character sheet + storyboard + the previous scene's image (N-1)**; the N-1 chain is what holds the look together. If a scene fails, the chain keeps the last scene that *did* work rather than resetting.
+- **Image-based generation wait.** The Multi Analyze script's `waitForTextResponse` / `waitForResponseStable` gate on `text.length > 200`. An image reply has almost no text, so those would spin for the full 30-minute timeout. `waitForGeneratedImage()` instead waits for a new large `<img>`, stable across 3 polls, and bails early once generation has clearly ended with nothing.
+- **Attachment detection is scoped OUTSIDE the conversation** (`inChat()` / `CHAT_SCOPE`). The Multi Analyze version counts `blob:` images across the whole page, which is only safe because it sends exactly one message. Here the chat fills with images, and a generated image must never read as an "attachment".
+
+### The one way this engine can silently corrupt a reel — and the four guards
+
+**The trap:** the reference images sit in the composer before send, but the moment you send, Gemini **re-renders them inside the user's turn bubble**, where they look like brand-new `<img>`s that appeared after the baseline. If one of those is captured, monitor.py will happily write **scene N with scene N-1's pixels** and `img_on_disk` will report success. monitor.py's own 409 `_reference_digests` guard cannot catch this: it knows the storyboard and character sheet, but **not** the N-1 scene image this engine attaches.
+
+Four independent guards, all required:
+
+1. `generatedImgs()` **excludes the user turn** (`USER_TURN` selector). This is the load-bearing one.
+2. It requires `naturalWidth/Height >= 256` — chips, avatars and icons are small.
+3. The src baseline is taken **after attaching references and immediately before `clickSend()`**, so the delta structurally cannot contain them.
+4. `saveGeminiImage` in `background.js` **drops any image whose bytes match a reference** we just attached (a client-side twin of the server's 409 guard, extended to cover N-1).
+
+`generatedImgs()` deliberately does **not** require an ancestor response container. ChatGPT renders image output *outside* its role container (see the bug table below) and Gemini may too — requiring one would match nothing. Excluding what is known-wrong is the fail-safe direction.
+
+### `saveGeminiImage` (background.js) — two sources, one exit
+
+- `https://…googleusercontent.com/…` → fetched **in the service worker**, which holds the host permission, so no page CORS applies. This needs `https://*.googleusercontent.com/*` in `host_permissions` — it is **not** covered by the existing `https://*.google.com/*`.
+- `blob:` / `data:` → a blob URL is scoped to the **page's** origin and is invisible to the service worker, so `gemini.js` reads those bytes itself and sends base64.
+
+Both are then **re-encoded to a real PNG** (`createImageBitmap` → `OffscreenCanvas` → `convertToBlob`). This is not optional: `/save_image` validates the *filename* and never looks at the body, so a WebP served under a `.png` name would sail through and only blow up later when Flow tries to use it as a first frame.
+
+**Never route Gemini images through `chrome.downloads`** — monitor.py's `DownloadsHandler` watches `~/Downloads` for these exact filenames and would double-write state.
+
+### Gemini throttling gets its own budget
+
+A throttle is **not** a failure. It backs off 60 s and retries the **same scene without consuming an attempt** (max 5 backoffs), then stops honestly with `imagesRateLimited`. This is the same lesson as flow.js's `rl_retries_*`: when a transient Google throttle counted against a fail budget, a few throttles silently dropped scenes and reels sat at 3/10 while the slot looked finished. Re-running the reel in hybrid mode resumes exactly where it stopped, because a scene already on disk is skipped.
+
+### UI-turn lock
+
+Gemini's mode picker is an Angular overlay that **does not render in a background tab**. So `gemini.js` asks background.js for a UI turn (`acquireUi` → `uiGranted` → `releaseUi`), which foregrounds that one tab while it sets 3.1 Pro + Extended (~5 s), then releases. One tab at a time, so tabs never fight for focus; a closed tab frees its turn instantly via `chrome.tabs.onRemoved`. Pastes and generation are background-safe and stay parallel. Do **not** shorten the 10-minute backstop timer — a slow tab is not a dead tab, and releasing it mid-menu re-creates the contention this exists to remove.
+
+### When Gemini's DOM changes
+
+Set `DIAG = 'image'` at the top of `content/gemini.js`, run one reel, and read the side-panel log: `dumpImageDom()` prints every candidate `<img>` (src scheme, dimensions, alt) plus image-ish button labels. It also fires **automatically** whenever a turn ends with no image captured, so the first sign of a selector break is a usable dump rather than a silent failure.
 
 ## Architecture
 
 ### Key files
 
-- **`background.js`** — Service worker. Routes messages from content scripts. Handles `injectFileUpload`, `fillSlate`, `clickGenerateSlate`.
-- **`content/chatgpt.js`** — Isolated-world content script on chatgpt.com. Drives the full image phase (A/B/C). Sends messages to background.js.
+- **`background.js`** — Service worker. Routes messages from content scripts. Handles `injectFileUpload`, `fillSlate`, `clickGenerateSlate`, `saveGeminiImage`, and the UI-turn lock.
+- **`content/chatgpt.js`** — Isolated-world content script on chatgpt.com. Drives the full image phase (A/B/C). In hybrid mode `stopAfterStoryboard` makes it stop after Phase A and emit `storyboardComplete`. Sends messages to background.js.
 - **`content/chatgpt_main.js`** — MAIN world content script (loaded at `document_start`). Overrides `HTMLInputElement.prototype.click` — currently harmless (pendingFile is always null).
+- **`content/gemini.js`** — Content script on gemini.google.com. Hybrid engine only: scene images + thumbnail, one scene per message. See the engine section above.
 - **`content/flow.js`** — Content script on labs.google/fx. Drives Google Flow video generation. Selects which scenes still need a video from **disk truth** (`img_on_disk`/`vdo_on_disk`, served by monitor.py), not from contents.json flags — see "Video phase: disk-based selection" below.
-- **`sidepanel.html` / `sidepanel.js`** — UI for managing slots and displaying logs.
+- **`sidepanel.html` / `sidepanel.js`** — UI for managing slots, the image-engine toggle, and displaying logs.
 
 ### How file injection works (injectFileUpload)
 
@@ -39,6 +114,26 @@ chatgpt.js → log('Attached: fiber:...') → sleep(3s) → continue
 ```
 
 **Do NOT move fetch() into executeScript MAIN world** — it will be blocked by CSP every time.
+
+### Attachments: attach FIRST, type SECOND — never a blind sleep (2026-07-13)
+
+**The rule: on both sites, the file is attached and its upload CONFIRMED COMPLETE before the prompt text is typed, and the message is never sent until then.**
+
+The ordering is not cosmetic — it is what makes the completion check possible:
+
+- **ChatGPT** keeps the send button **disabled while an attachment is uploading, but enabled as soon as there is text**. So with an empty composer, "send became enabled" is a genuine upload-complete signal. Type the prompt first and that signal is gone forever. `uploadFileToChatGPT()` therefore waits for (1) the attachment thumbnail to appear (`countAttachmentsNow() > baseline`), then (2) send to be enabled on 3 consecutive polls — and only then returns `true`. It retries the injection up to 3× and **checks `countAttachmentsNow() > baseline` before re-injecting**, because injecting twice is the old "two character sheets attached" bug.
+- **Gemini** does the same thing for free: it disables Send while an attachment uploads, which is what `clickSend()`'s wait-for-enabled has always relied on. It now **throws instead of force-clicking** when Send never enables — force-clicking sends a half-uploaded reference, and the scene comes back wrong while looking perfectly successful on disk.
+
+**Why this matters more than it looks.** The old `uploadFileToChatGPT()` returned as soon as `injectFileUpload` reported success and then slept 3 s. But React's `onChange` firing only means the upload **started** — a 2 MB character sheet routinely takes longer than 3 s. `clickSend()` then fired while it was still uploading, so ChatGPT received a **text-only** message. Sometimes it noticed and asked for the sheet (visible, annoying). The dangerous case is when it doesn't: it draws the storyboard with the **wrong character**, all 10 scene images inherit it, Flow renders 10 videos, and the editor produces a finished reel. Nothing anywhere flags it. It was intermittent — a race, not a broken selector — which is exactly why it survived so long.
+
+Consequences that are now enforced:
+
+- **Phase A hard-fails if the character sheet does not attach.** It throws rather than generate a storyboard that would poison the whole reel. This is the one hard stop in the image path, and it is deliberate: it costs a re-run, versus a silently wasted reel of Gemini + Flow generations.
+- Phases B and C only **warn** — A/B/C share ONE chat, so the sheet from Phase A is already in context there; the re-attach is belt-and-braces.
+- **`gemini.js` never sends a turn with a missing reference.** If any of (character sheet / storyboard / scene N-1) fails to paste, it clears the composer and abandons the turn, and the scene's retry loop tries again. Sending without the N-1 image would produce a valid-looking `scene-NN.png` with the wrong character or a broken look.
+- **Every Gemini turn starts from a clean slate** (`clearAttachments()` + `clearComposer()`). An aborted turn can leave chips and text behind, and pasting on top of them double-attaches. Note `clearComposer()` must never use **Escape** — in Gemini, Escape deletes the attachment.
+
+Covered by `upload_test.js`-style checks during development: a 12 s upload now returns at ~14 s (old code returned at ~3 s), a flaky injection retries at most 3×, and a file that never attaches returns `false` instead of proceeding.
 
 ### Message listener exclusion guard
 
@@ -176,6 +271,8 @@ an old monitor. Used in both the project list and the status/delete table.
 | Parallel slots freeze mid-run | With 3+ slots, only the visible tab kept running; hidden ones froze and stopped | Chrome Memory Saver froze/discarded inactive background tabs | `background.js` sets `autoDiscardable:false` after each `tabs.create` (commit 5df3f7a) |
 | One image tab frozen ~1 hour | Stuck at `Polling for N images (baseline=X)`; clicking the tab didn't help | ChatGPT made fewer than 10 images in one message; `pollForImages` waited out the full 3600s timeout | `pollForImages` `noProgressWindow` (180s) early-stop (commit fd83438) |
 | Flow needs manual ✕ + "Agent" clicks (some accounts) | On an ULTRA account, every new project opened an "Omni" panel + non-Agent compose; without the two clicks the bot kept attaching media | Google per-account UI rollout the bot didn't handle | `dismissAgentPanel()` in flow.js, gated on the panel being present so it's a no-op elsewhere (commit 19688c5) |
+| Character sheet not attached → whole reel drawn with the WRONG character | Intermittent. Sometimes ChatGPT replies "กรุณาแนบ Character Sheet image ในแชตนี้ก่อน"; worse, sometimes it silently draws a storyboard with a different character and all 10 scenes + videos inherit it | `uploadFileToChatGPT` returned as soon as React's `onChange` fired, then slept 3 s — but that only means the upload **started**. A 2 MB sheet takes longer, so `clickSend()` sent a text-only message. Its verify loop only ran on the *failure* branch | Attach BEFORE typing (empty composer ⇒ send stays disabled until the upload completes ⇒ a real completion signal); wait for thumbnail + send-enabled; retry ≤3× with a no-double-attach guard; **Phase A throws** if the sheet never attaches |
+| **(Gemini engine, designed-against not observed)** scene N saved with scene N-1's pixels | A reel would look right per-file (`img_on_disk` true, correct filename) but two scenes are the same image | The N-1 reference is attached in the composer, then **re-rendered inside the user's turn** on send — so it appears as a brand-new `<img>` after the capture baseline. monitor.py's 409 guard knows the storyboard + char sheet but NOT the N-1 scene image | Four guards in `content/gemini.js` + `saveGeminiImage`: exclude the user turn, require ≥256px, baseline after attach / before send, and reject bytes matching an attached reference |
 
 ## Deploying to another machine
 

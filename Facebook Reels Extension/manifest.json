@@ -9,6 +9,7 @@
     "https://labs.google/*",
     "https://*.googleapis.com/*",
     "https://*.google.com/*",
+    "https://*.googleusercontent.com/*",
     "http://localhost:7788/*"
   ],
   "background": {
@@ -29,6 +30,11 @@
     {
       "matches": ["https://labs.google/fx/*"],
       "js": ["content/flow.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content/gemini.js"],
       "run_at": "document_idle"
     }
   ],

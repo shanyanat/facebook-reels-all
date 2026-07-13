@@ -177,33 +177,72 @@ function countAttachmentsNow() {
     return root.querySelectorAll('img[src^="blob:"]').length;
 }
 
+// Attach a file and PROVE it finished uploading before returning. Returns true/false.
+//
+// This must be called BEFORE the prompt text is typed. That ordering is what makes the
+// completion check possible: with an empty composer, ChatGPT keeps the send button
+// DISABLED until the attachment has finished uploading — so "send became enabled" is a
+// real upload-complete signal. Once there is text in the composer the send button is
+// enabled regardless, and that signal is gone.
+//
+// The old version returned as soon as injectFileUpload reported success and then slept
+// 3s. Calling React's onChange only means the upload STARTED; a 2 MB character sheet
+// routinely takes longer than 3s, so clickSend() fired first and ChatGPT received a
+// text-only message. It then either asked for the sheet (visible) or, far worse, drew
+// the storyboard with the WRONG CHARACTER (silent — and every scene inherits it).
 async function uploadFileToChatGPT(serverPath, filename) {
     log(`Uploading ${filename}...`);
     const baseline = countAttachmentsNow();
-    log(`Attachment baseline: ${baseline}`);
 
-    try {
-        const res = await chrome.runtime.sendMessage({
-            action: 'injectFileUpload',
-            path: serverPath,
-            filename
-        });
-        if (res?.ok) {
-            log(`Attached: ${res.result}`);
-            await sleep(3000);
-            return;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        // A previous attempt's upload may have landed late — never inject twice, that
+        // is the old "two character sheets attached" bug.
+        if (countAttachmentsNow() > baseline) break;
+
+        try {
+            const res = await chrome.runtime.sendMessage({
+                action: 'injectFileUpload', path: serverPath, filename
+            });
+            if (res?.ok) log(`Injected: ${res.result}`);
+            else log(`injectFileUpload failed (attempt ${attempt}): ${res?.result || res?.error}`);
+        } catch (e) {
+            log(`injectFileUpload error (attempt ${attempt}): ${e.message}`);
         }
-        log(`injectFileUpload failed: ${res?.result || res?.error}`);
-    } catch (e) {
-        log(`injectFileUpload error: ${e.message}`);
+
+        // 1. The thumbnail must appear — proves the file reached the composer.
+        const appeared = await until(() => countAttachmentsNow() > baseline, 60000);
+        if (appeared) break;
+        log(`No attachment thumbnail after 60s (attempt ${attempt}/3)`);
     }
 
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline) {
-        if (countAttachmentsNow() > baseline) { log(`Upload confirmed (delayed): ${filename}`); return; }
-        await sleep(1000);
+    if (countAttachmentsNow() <= baseline) {
+        log(`FAILED to attach ${filename}`);
+        return false;
     }
-    log(`Upload timed out (unconfirmed): ${filename}`);
+
+    // 2. The upload must FINISH. Composer is still empty, so send stays disabled until
+    //    ChatGPT has the bytes. Require it enabled on 3 consecutive polls (a brief
+    //    flicker between multiple attachments must not read as "done").
+    let stable = 0;
+    const settled = await until(() => {
+        stable = _sendBtnEnabled() ? stable + 1 : 0;
+        return stable >= 3;
+    }, 180000, 700);
+    if (!settled) log(`WARNING: upload of ${filename} never settled (send stayed disabled) — sending anyway`);
+
+    await sleep(800);
+    log(`✓ Attached and uploaded: ${filename}`);
+    return true;
+}
+
+// Poll fn() until truthy. Returns true/false instead of throwing (waitFor throws).
+async function until(fn, timeout, interval = 500) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+        try { if (fn()) return true; } catch {}
+        await sleep(interval);
+    }
+    return false;
 }
 
 async function clickSend() {
@@ -404,7 +443,7 @@ async function getDiskMissingScenes(pid) {
 
 // ── Main phases ───────────────────────────────────────────────────────────────
 
-async function runImages(project, resumeFrom) {
+async function runImages(project, resumeFrom, stopAfterStoryboard) {
     const pid   = project.id;
     const page  = project.page;
     const ratio = project.aspect_ratio || '9:16';
@@ -429,16 +468,23 @@ async function runImages(project, resumeFrom) {
         await selectAspectRatio(ratio);
         await selectThinkingMode('extended');
 
+        // Attach FIRST, type SECOND. See uploadFileToChatGPT: an empty composer is what
+        // lets us tell when the upload has actually finished.
+        if (char) {
+            report('Phase A: Uploading character sheet...');
+            const ok = await uploadFileToChatGPT(char, char.split(/[\\/]/).pop());
+            if (!ok) {
+                // Hard stop. Generating here would produce a storyboard with the wrong
+                // character, and all 10 scene images + videos would silently inherit it —
+                // a whole wasted reel that nothing downstream flags.
+                throw new Error('Phase A: character sheet did not attach — refusing to ' +
+                                'generate a storyboard without it (re-run the reel)');
+            }
+        }
+
         const storyboardPrompt = cutAtEndMarker(project.storyboard_prompt.trim(), 'STORYBOARD')
             + '\n\n--- The End of STORYBOARD PROMPTS ---';
         await fillChatInput(storyboardPrompt);
-
-        if (char) {
-            report('Phase A: Uploading character sheet...');
-            try {
-                await uploadFileToChatGPT(char, char.split('/').pop());
-            } catch (e) { log(`WARNING: char sheet upload failed: ${e.message}`); }
-        }
 
         await clickSend();
         await sleep(5000);
@@ -458,6 +504,16 @@ async function runImages(project, resumeFrom) {
 
     if (await isStopped(pid)) { log('Stopped before Phase B'); return; }
 
+    // Hybrid engine: the storyboard is all ChatGPT does. The scene images + thumbnail
+    // are made on Gemini (far cheaper in ChatGPT image quota), so hand the slot over.
+    // Undefined for the pure-ChatGPT engine ⇒ this never fires there.
+    if (stopAfterStoryboard) {
+        log('=== STORYBOARD DONE — handing off to Gemini ===');
+        report('Storyboard done → opening Gemini for the scenes...');
+        chrome.runtime.sendMessage({ action: 'storyboardComplete', projectId: pid }).catch(() => {});
+        return;
+    }
+
     // ── PHASE B: All scene images ────────────────────────────────────────────
     log(`--- Phase B: ${project.total_scenes} scenes ---`);
     report(`Phase B: ${project.total_scenes} scene images...`);
@@ -466,25 +522,28 @@ async function runImages(project, resumeFrom) {
     await selectAspectRatio(ratio);
     await selectThinkingMode('standard');
 
+    // Attach references BEFORE typing (see uploadFileToChatGPT — an empty composer is
+    // what proves the upload finished). These are belt-and-braces: Phases A/B/C share
+    // ONE chat, so the character sheet from Phase A is already in context. A failure
+    // here is therefore a warning, not a hard stop.
+    report('Phase B: Waiting for storyboard reference...');
+    const storyboardPath = await waitForStoryboardOnServer(pid, page);
+    if (storyboardPath) {
+        const ok = await uploadFileToChatGPT(storyboardPath, `${pid}-storyboard.png`);
+        if (!ok) log('WARNING: storyboard reference did not attach (Phase B)');
+    }
+
+    if (char) {
+        const ok = await uploadFileToChatGPT(char, char.split(/[\\/]/).pop());
+        if (!ok) log('WARNING: char sheet did not attach (Phase B)');
+    }
+
     const sceneBlocks = project.scenes
         .map(s => `## SCENE ${s.scene_num} IMAGE PROMPT\n\n${cutAtEndMarker(s.image_prompt.trim(), 'IMAGE')}`)
         .join('\n\n---\n\n');
     await fillChatInput(
         sceneBlocks + '\n\nCreate all image สร้างเป็นภาพแยกกัน ซีนละ 1 ภาพ\n\n--- The End of IMAGE PROMPTS ---'
     );
-
-    // Upload storyboard reference (wait for monitor.py to write it to working/)
-    report('Phase B: Waiting for storyboard reference...');
-    const storyboardPath = await waitForStoryboardOnServer(pid, page);
-    if (storyboardPath) {
-        await uploadFileToChatGPT(storyboardPath, `${pid}-storyboard.png`);
-    }
-
-    if (char) {
-        try {
-            await uploadFileToChatGPT(char, char.split('/').pop());
-        } catch (e) { log(`WARNING: char sheet upload (Phase B) failed: ${e.message}`); }
-    }
 
     await clickSend();
     await sleep(5000);
@@ -586,13 +645,15 @@ async function runImages(project, resumeFrom) {
         await activateImageMode();
         await selectAspectRatio(thumbRatio);
         await selectThinkingMode('extended');
-        await fillChatInput(cutAtEndMarker(thumbPrompt, 'THUMBNAIL'));
 
+        // Attach before typing (see uploadFileToChatGPT). Same chat as A/B, so a miss
+        // here is a warning — the sheet is already in context.
         if (char) {
-            try {
-                await uploadFileToChatGPT(char, char.split('/').pop());
-            } catch (e) { log(`WARNING: char sheet upload (Phase C) failed: ${e.message}`); }
+            const ok = await uploadFileToChatGPT(char, char.split(/[\\/]/).pop());
+            if (!ok) log('WARNING: char sheet did not attach (Phase C)');
         }
+
+        await fillChatInput(cutAtEndMarker(thumbPrompt, 'THUMBNAIL'));
 
         await clickSend();
         await sleep(5000);
@@ -621,7 +682,7 @@ let _running = false;
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'startImages' && !_running) {
         _running = true;
-        runImages(msg.project, msg.resumeFrom)
+        runImages(msg.project, msg.resumeFrom, msg.stopAfterStoryboard)
             .catch(e => {
                 log(`FATAL: ${e.message}`);
                 chrome.runtime.sendMessage({ action: 'error', message: e.message }).catch(() => {});

@@ -53,6 +53,31 @@ document.querySelectorAll('.slot-btn').forEach(btn => {
     };
 });
 
+// ── Image engine toggle ───────────────────────────────────────────────────────
+// 'chatgpt' — all 12 images per reel on ChatGPT (the original path).
+// 'hybrid'  — storyboard on ChatGPT, the 10 scenes + thumbnail on Gemini. Same
+//             output filenames, so the video phase and everything downstream is
+//             identical; it just costs 1 ChatGPT image per reel instead of 12.
+// The choice is stored in reel_gen_state by background.js when the run starts.
+
+function getEngine() {
+    const active = document.querySelector('.engine-btn.active');
+    return active ? active.dataset.engine : 'chatgpt';
+}
+
+function setEngine(engine) {
+    document.querySelectorAll('.engine-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.engine === engine);
+    });
+}
+
+document.querySelectorAll('.engine-btn').forEach(btn => {
+    btn.onclick = () => {
+        if (btn.disabled) return;
+        setEngine(btn.dataset.engine);
+    };
+});
+
 // ── Render helpers ────────────────────────────────────────────────────────────
 
 function renderSlots(state) {
@@ -326,6 +351,12 @@ async function refresh() {
         btn.disabled = state.running;
     });
 
+    // Engine toggle: reflect the saved engine; can't be switched mid-run
+    setEngine(state.imageEngine === 'hybrid' ? 'hybrid' : 'chatgpt');
+    document.querySelectorAll('.engine-btn').forEach(btn => {
+        btn.disabled = state.running;
+    });
+
     renderSlots(state);
     await renderQueue(state);
 }
@@ -336,7 +367,7 @@ document.getElementById('start-btn').onclick = async () => {
     const btn = document.getElementById('start-btn');
     btn.disabled = true;
     btn.textContent = '⏳ Starting…';
-    await bg({ action: 'start', maxSlots: getActiveSlots() });
+    await bg({ action: 'start', maxSlots: getActiveSlots(), imageEngine: getEngine() });
     await refresh();
 };
 
