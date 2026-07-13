@@ -66,7 +66,30 @@ confirmed). Live pipeline: `waitForReady` → `ensureProExtended` → `uploadFil
 - **Model**: the tier (Pro) is sticky, but a fresh/background tab defaults Thinking level
   to **Standard** (trap #1 was real). `ensureProExtended()` sets **3.1 Pro + Extended**
   every run via the mode pill (`button[aria-label^="Open mode picker"]`) → menu rows are
-  `role="menuitem"` matched **by text** (`3.1 Pro`, `Thinking level`, `Extended`).
+  `role="menuitem"` matched **by text**.
+  **Two menu layouts must both be handled (fixed 2026-07-13).** Getting this wrong fails
+  *silently* — Pro is selected, thinking quietly stays on Standard, and every brief is
+  written at the wrong level with nothing in the output to show it:
+  - **FLAT** — `3.1 Pro` and `Extended thinking` are both direct items in the mode picker.
+    (What this account shows.)
+  - **NESTED** — `Extended` sits in a submenu under a `Thinking level` row.
+
+  The original code knew only NESTED: it looked for the "Thinking level" row, didn't find
+  one, warned, and gave up. It now tries the flat item first, falls back to the submenu,
+  and **verifies both afterwards** (`verifyModeSelection()`), logging
+  `Model check → 3.1 Pro: ON | Extended: ON` and dumping the menu if either is `NOT SET`.
+
+  Two traps encoded in the code:
+  - **Selection state comes from `aria-checked`/`aria-selected`, never from text.** The item
+    is literally *named* "Extended thinking", so any `textContent.includes('extended')` check
+    is always true and would wrongly conclude "already on".
+  - **A `Thinking level` ROW also contains the word "Extended"** once that is its current
+    value, so `/extended/` alone can match the row instead of the option — every lookup
+    excludes the row (`findItem(EXTENDED_OPT, THINKING_ROW)`). Never click an already-checked
+    Extended: on a toggle that switches it back **off**.
+
+  The image-generation engine in `Facebook Reels Extension/content/gemini.js` carries the
+  same fix — keep the two in step if Gemini's menu changes again.
 - **Upload (image AND video) = clipboard PASTE** (synthetic `ClipboardEvent` + DataTransfer)
   — a pure DOM event, the only method that reliably works in BACKGROUND tabs. Video paste
   works too (Gemini accepts pasted files). Ladder is paste → (image-only) drop → menu. The

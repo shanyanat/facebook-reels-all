@@ -463,15 +463,68 @@
     }).catch(() => {});
   }
 
-  // ── Set model: 3.1 Pro + Extended (live, every run) ───────────────────────────
-  // The model tier (Pro) is reliably sticky, but the Thinking level defaults to
-  // Standard on a fresh/background tab — so we set Extended each run. All menu rows
-  // are role="menuitem" with NO aria-label; matched by text (confirmed live 2026-06-27).
+  // ── Set model: 3.1 Pro + Extended thinking (live, every run) ──────────────────
+  //
+  // BOTH must end up selected. The tier (Pro) is reliably sticky, but the thinking
+  // level defaults back to Standard on a fresh/background tab, so it is set each run.
+  //
+  // There are TWO menu layouts in the wild and the bot must handle either — guessing
+  // wrong fails SILENTLY (Pro gets set, thinking quietly stays on Standard, and every
+  // brief is written at the wrong level with nothing in the output to show it):
+  //
+  //   (a) FLAT   — "3.1 Pro" and "Extended thinking" are both direct items in the mode
+  //                picker. (What this account shows.)
+  //   (b) NESTED — "Extended" lives in a submenu under a "Thinking level" row.
+  //
+  // This originally knew only (b): it looked for a "Thinking level" row, didn't find
+  // one, warned, and gave up. It now tries the flat item first, falls back to the
+  // submenu, and VERIFIES both instead of assuming the clicks landed.
+  // All menu rows are role="menuitem" with NO aria-label; matched by TEXT.
 
-  function menuItemByText(re) {
-    return Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], .mat-mdc-menu-item'))
-      .filter(isVisible)
-      .find(el => re.test((el.textContent || '').replace(/\s+/g, ' ').trim()));
+  const MENU_ITEM = '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], ' +
+                    '[role="option"], .mat-mdc-menu-item';
+
+  function menuItems() {
+    return Array.from(document.querySelectorAll(MENU_ITEM)).filter(isVisible);
+  }
+
+  const itemText = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+
+  // Rows carry no aria-label, so selection state comes from aria-checked/selected.
+  // It must NOT come from the text: the item is literally named "Extended thinking",
+  // so any textContent.includes('extended') test is always true and would wrongly
+  // conclude "already on".
+  function isChecked(el) {
+    const a = el.getAttribute('aria-checked') ?? el.getAttribute('aria-selected');
+    return a === 'true';
+  }
+
+  function findItem(re, notRe) {
+    return menuItems().find(el => {
+      const t = itemText(el);
+      return re.test(t) && !(notRe && notRe.test(t));
+    }) || null;
+  }
+
+  async function openModeMenu() {
+    if (menuItems().length) return true;      // already open
+    const pill = getModePill();
+    if (!pill) return false;
+    pill.click();
+    const end = Date.now() + 5000;
+    while (Date.now() < end) {
+      if (menuItems().length) { await sleep(300); return true; }
+      await sleep(200);
+    }
+    return false;
+  }
+
+  function dumpMenu(slotIndex, tag) {
+    const items = menuItems();
+    const lines = items.slice(0, 20)
+      .map((el, i) => `${i}.${isChecked(el) ? '[x]' : '[ ]'} ${itemText(el).slice(0, 40)}`);
+    console.log(`[gemini] menu:${tag} (${items.length})`, lines);
+    report(slotIndex, 'typing', `menu:${tag} → ${lines.join(' | ').slice(0, 160)}`);
   }
 
   function pressEscape() {
@@ -486,51 +539,99 @@
     if (notNow && isVisible(notNow)) { try { notNow.click(); } catch {} }
   }
 
+  // A "Thinking level" ROW also contains the word "Extended" once that is its current
+  // value — so /extended/ alone can match the row instead of the option. Every lookup
+  // excludes the row.
+  const THINKING_ROW = /thinking level/i;
+  const EXTENDED_OPT = /extended/i;
+
   async function ensureProExtended(slotIndex) {
-    const pill = getModePill();
-    if (!pill) { report(slotIndex, 'typing', '⚠️ Model pill not found — using Gemini default'); return; }
-
-    const alreadyPro = /currently Pro/i.test(pill.getAttribute('aria-label') || '');
-
-    pill.click();
-    await sleep(1200);
-
-    // Ensure model = 3.1 Pro, but only if it isn't already (clicking it may close the menu).
-    if (!alreadyPro) {
-      const proItem = menuItemByText(/3\.1\s*Pro/i);
-      if (proItem) { proItem.click(); await sleep(1000); pill.click(); await sleep(1200); }
-    }
-
-    const thinking = menuItemByText(/thinking level/i);
-    if (!thinking) {
-      report(slotIndex, 'typing', '⚠️ Thinking-level row not found — leaving level as-is');
-      pressEscape();
+    if (!await openModeMenu()) {
+      report(slotIndex, 'typing', '⚠️ Model pill not found — using Gemini default');
       return;
     }
 
-    // Already Extended? Close the menu and move on.
-    if (/extended/i.test((thinking.textContent || '').replace(/\s+/g, ' '))) {
-      report(slotIndex, 'typing', '✓ Thinking level already Extended');
-      pressEscape();
-      return;
-    }
-
-    // Open the submenu and pick Extended.
-    try { thinking.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); } catch {}
-    await sleep(500);
-    try { thinking.click(); } catch {}
-    await sleep(1000);
-
-    const ext = menuItemByText(/extended/i);
-    if (ext) {
-      ext.click();
-      await sleep(1000);
-      report(slotIndex, 'typing', '✓ Set thinking level: Extended');
+    // ── 1. Model = 3.1 Pro ──────────────────────────────────────────────────────
+    const pro = findItem(/3\.1\s*pro/i);
+    if (!pro) {
+      report(slotIndex, 'typing', '⚠️ "3.1 Pro" not found in the mode menu');
+    } else if (isChecked(pro)) {
+      report(slotIndex, 'typing', '✓ 3.1 Pro already selected');
     } else {
-      report(slotIndex, 'typing', '⚠️ Extended option not found — leaving level as-is');
+      pro.click();
+      await sleep(1200);            // clicking a model row usually closes the menu
+      report(slotIndex, 'typing', '✓ Selected: 3.1 Pro');
+    }
+
+    // ── 2. Extended thinking ────────────────────────────────────────────────────
+    if (!await openModeMenu()) {    // the model click may have closed the menu
+      report(slotIndex, 'typing', '⚠️ Could not re-open the mode menu for Extended thinking');
+      return;
+    }
+    await sleep(400);
+
+    // Layout (a): a direct item in this menu.
+    let ext = findItem(EXTENDED_OPT, THINKING_ROW);
+
+    // Layout (b): inside a "Thinking level" submenu.
+    if (!ext) {
+      const row = findItem(THINKING_ROW);
+      if (row) {
+        // A Material submenu opens on hover OR click — fire both.
+        try { row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); } catch {}
+        await sleep(500);
+        try { row.click(); } catch {}
+        await sleep(1000);
+        ext = findItem(EXTENDED_OPT, THINKING_ROW);
+      }
+    }
+
+    if (!ext) {
+      report(slotIndex, 'typing', '⚠️ "Extended thinking" not found in either layout');
+      dumpMenu(slotIndex, 'extended-missing');
+      pressEscape();
+      await sleep(300);
+      return;
+    }
+
+    if (isChecked(ext)) {
+      report(slotIndex, 'typing', '✓ Extended thinking already on');
+    } else {
+      // Never click an already-checked Extended: on a toggle that switches it back OFF.
+      ext.click();
+      await sleep(1200);
+      report(slotIndex, 'typing', '✓ Selected: Extended thinking');
     }
 
     pressEscape();   // close any lingering menu before typing
+    await sleep(500);
+
+    // ── 3. VERIFY — do not assume the clicks landed ─────────────────────────────
+    await verifyModeSelection(slotIndex);
+  }
+
+  // Re-open the menu and confirm BOTH are really selected. A silent miss means every
+  // brief is written on the wrong model/thinking level, which is invisible in the
+  // output — worth the extra second to check and say so.
+  async function verifyModeSelection(slotIndex) {
+    if (!await openModeMenu()) return;
+    await sleep(400);
+
+    const pro = findItem(/3\.1\s*pro/i);
+    const ext = findItem(EXTENDED_OPT, THINKING_ROW);
+    const row = findItem(THINKING_ROW);
+
+    const proOn = pro ? isChecked(pro) : false;
+    // Flat layout: read the option's checked state. Nested: the row's own text shows
+    // the current value (e.g. "Thinking level  Extended").
+    const extOn = ext ? isChecked(ext) : (row ? EXTENDED_OPT.test(itemText(row)) : false);
+
+    const msg = `Model check → 3.1 Pro: ${proOn ? 'ON' : 'NOT SET'} | Extended: ${extOn ? 'ON' : 'NOT SET'}`;
+    console.log('[gemini] ' + msg);
+    report(slotIndex, 'typing', (proOn && extOn ? '✓ ' : '⚠️ ') + msg);
+    if (!proOn || !extOn) dumpMenu(slotIndex, 'verify-failed');
+
+    pressEscape();
     await sleep(400);
   }
 
