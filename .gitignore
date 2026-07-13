@@ -39,3 +39,12 @@ __pycache__/
 
 # --- Windows shortcut junk (machine-local) ---
 *.lnk
+
+# --- Experimental / unfinished: Grid-storyboard ("Short Solution") ---
+# A 2026-07 experiment to cut ChatGPT image cost by drawing 4 scenes in one
+# grid image instead of 1 image per scene. PAUSED — Google Flow cannot use a
+# grid as a first frame, so it regenerates instead of reproducing it and the
+# action fidelity drops. Notes/prompts are kept locally on the main machine
+# only. Ignored on purpose so a `git pull` never drags this unfinished work
+# onto the backup machines. It contains no code and nothing the bot imports.
+Facebook Reels to America Short Solution/
