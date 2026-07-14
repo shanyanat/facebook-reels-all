@@ -17,6 +17,12 @@ class Clip:
     topic: str = ""
 
 
+@dataclass
+class BatchGroup:
+    channel: str
+    clips: list[Clip]
+
+
 def default_download_root() -> Path:
     project_dir = Path(__file__).resolve().parent
     return project_dir.with_name(project_dir.name + " download clip")
@@ -38,32 +44,50 @@ def find_batch_file(root: Path) -> Path:
     return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
 
 
-def parse_batch(path: Path) -> tuple[str, list[Clip]]:
+def parse_batch_groups(path: Path) -> list[BatchGroup]:
     text = path.read_text(encoding="utf-8-sig")
-    channel_match = re.search(r"^Channel Name:\s*(.+?)\s*$", text, re.MULTILINE)
-    if not channel_match:
+    if not re.search(r"^Channel Name:\s*(.+?)\s*$", text, re.MULTILINE):
         raise ValueError("Missing line like: Channel Name: 1-page-Strange-Frontiers")
-    channel = channel_match.group(1).strip()
 
+    groups: list[BatchGroup] = []
+    channel: str | None = None
     clips: list[Clip] = []
     current: dict[str, str] = {}
     current_seq: int | None = None
 
+    def flush_clip() -> None:
+        nonlocal current_seq, current
+        if current_seq is not None and current.get("url"):
+            clips.append(
+                Clip(
+                    seq=current_seq,
+                    url=current["url"],
+                    status=current.get("status", ""),
+                    topic=current.get("topic", ""),
+                )
+            )
+        current_seq = None
+        current = {}
+
+    def flush_group() -> None:
+        nonlocal channel, clips
+        flush_clip()
+        if channel is not None:
+            groups.append(BatchGroup(channel=channel, clips=clips))
+        clips = []
+
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        channel_match = re.match(r"^Channel Name:\s*(.+?)\s*$", line)
+        if channel_match:
+            flush_group()
+            channel = channel_match.group(1).strip()
+            continue
+
         seq_match = re.match(r"^(\d+)\.\s*$", line)
         if seq_match:
-            if current_seq is not None and current.get("url"):
-                clips.append(
-                    Clip(
-                        seq=current_seq,
-                        url=current["url"],
-                        status=current.get("status", ""),
-                        topic=current.get("topic", ""),
-                    )
-                )
+            flush_clip()
             current_seq = int(seq_match.group(1))
-            current = {}
             continue
 
         for key in ("URL", "Status", "Topic"):
@@ -71,33 +95,42 @@ def parse_batch(path: Path) -> tuple[str, list[Clip]]:
                 current[key.lower()] = line.split(":", 1)[1].strip()
                 break
 
-    if current_seq is not None and current.get("url"):
-        clips.append(
-            Clip(
-                seq=current_seq,
-                url=current["url"],
-                status=current.get("status", ""),
-                topic=current.get("topic", ""),
-            )
-        )
+    flush_group()
 
-    if not clips:
+    if not groups:
+        raise ValueError("Missing line like: Channel Name: 1-page-Strange-Frontiers")
+    return groups
+
+
+def parse_batch(path: Path) -> tuple[str, list[Clip]]:
+    groups = parse_batch_groups(path)
+    first_with_clips = next((group for group in groups if group.clips), groups[0])
+    if not first_with_clips.clips:
         raise ValueError("No URL lines found. Add lines like: URL: https://...")
-    return channel, clips
+    return first_with_clips.channel, first_with_clips.clips
 
 
 def write_batch(path: Path, channel: str, clips: list[Clip]) -> None:
-    lines = [f"Channel Name: {channel}", ""]
-    for clip in clips:
-        lines.extend(
-            [
-                f"{clip.seq}.",
-                f"URL: {clip.url}",
-                f"Status: {clip.status}",
-                f"Topic: {clip.topic}",
-                "",
-            ]
-        )
+    write_batch_groups(path, [BatchGroup(channel=channel, clips=clips)])
+
+
+def write_batch_groups(path: Path, groups: list[BatchGroup]) -> None:
+    lines: list[str] = []
+    for group in groups:
+        if lines:
+            lines.append("")
+        lines.extend([f"Channel Name: {group.channel}", ""])
+        for seq, clip in enumerate(group.clips, start=1):
+            clip.seq = seq
+            lines.extend(
+                [
+                    f"{clip.seq}.",
+                    f"URL: {clip.url}",
+                    f"Status: {clip.status}",
+                    f"Topic: {clip.topic}",
+                    "",
+                ]
+            )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -235,34 +268,45 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True)
     batch_path = args.batch.resolve() if args.batch else find_batch_file(root)
 
-    channel, clips = parse_batch(batch_path)
-    channel_dir = root / channel
-    channel_dir.mkdir(parents=True, exist_ok=True)
+    groups = parse_batch_groups(batch_path)
+    for group in groups:
+        (root / group.channel).mkdir(parents=True, exist_ok=True)
 
     ensure_tooling()
 
     success_count = 0
-    for clip in clips:
-        if clip.status.lower() == "downloaded":
-            print(f"Skipping #{clip.seq}: already marked Downloaded")
+    processed_channels = 0
+    for group in groups:
+        channel_dir = root / group.channel
+        if not group.clips:
+            print(f"Skipping channel with no URLs: {group.channel}")
             continue
 
-        if download_clip(clip, channel_dir):
-            clip.status = "Downloaded"
-            success_count += 1
-            write_batch(batch_path, channel, clips)
-        else:
-            clip.status = "Failed"
-            write_batch(batch_path, channel, clips)
+        processed_channels += 1
+        print("")
+        print(f"Channel: {group.channel}")
+        for clip in group.clips:
+            if clip.status.lower() == "downloaded":
+                print(f"Skipping #{clip.seq}: already marked Downloaded")
+                continue
 
-    if args.keep_analysis_files:
-        create_contact_sheets(channel_dir)
-    else:
-        cleanup_auxiliary_files(channel_dir)
+            if download_clip(clip, channel_dir):
+                clip.status = "Downloaded"
+                success_count += 1
+                write_batch_groups(batch_path, groups)
+            else:
+                clip.status = "Failed"
+                write_batch_groups(batch_path, groups)
+
+        if args.keep_analysis_files:
+            create_contact_sheets(channel_dir)
+        else:
+            cleanup_auxiliary_files(channel_dir)
 
     print("")
     print(f"Batch file: {batch_path}")
-    print(f"Channel folder: {channel_dir}")
+    print(f"Channels in batch: {len(groups)}")
+    print(f"Channels with URLs: {processed_channels}")
     print(f"Downloaded this run: {success_count}")
     print("Next Codex step: analyze downloaded clip batch")
     return 0
