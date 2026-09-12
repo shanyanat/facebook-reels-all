@@ -1,0 +1,14 @@
+# Project-local Codex permissions for the clip-batch workflow.
+#
+# Keep the normal sandbox/approval model, but allow Codex to update the sibling
+# download folder used by process_clip_batch.py. This lets clip analysis, MP4
+# renames, url_clip.txt updates, and clip-batch cleanup complete without a
+# separate approval for each file operation in that folder.
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+writable_roots = [
+  'C:\Claude code\ปรึกษาส่วนตัว\Facebook Reels All\Facebook Reels to America download clip',
+]
+network_access = false
