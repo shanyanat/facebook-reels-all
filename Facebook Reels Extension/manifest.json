@@ -28,7 +28,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://labs.google/fx/*"],
+      "matches": ["https://flow.google.com/*", "https://labs.google/fx/*"],
       "js": ["content/flow.js"],
       "run_at": "document_idle"
     },

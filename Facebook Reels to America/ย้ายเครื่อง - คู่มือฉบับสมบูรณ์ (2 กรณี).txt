@@ -173,7 +173,7 @@
 
   Login บัญชีที่ต้องใช้งาน (ใน Chrome ปกติ ไม่ใช่หน้าต่างบอท):
   → ChatGPT: chatgpt.com
-  → Google Flow: labs.google/fx/th/tools/flow
+  → Google Flow: flow.google.com
     (ต้องเป็นบัญชี Google ที่มีสิทธิ์ใช้ Flow Ultra)
 
 

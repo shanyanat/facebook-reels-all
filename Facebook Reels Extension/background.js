@@ -142,7 +142,7 @@ async function patchProject(id, fields) {
 
 // Which site each phase runs on.
 const PHASE_URL = {
-    videos:          'https://labs.google/fx/th/tools/flow',
+    videos:          'https://flow.google.com/',
     images:          'https://chatgpt.com/',
     storyboard:      'https://chatgpt.com/',
     'images-gemini': 'https://gemini.google.com/app'
@@ -278,6 +278,47 @@ async function _fillIdleSlotsInner(state) {
 }
 
 // ── Message handler ───────────────────────────────────────────────────────────
+
+// ── expectClipDownload: rename Flow's own clip download in flight ─────────────
+// The current Flow UI plays clips into a <canvas> — there is no <video> element in the
+// page (shadow roots and iframes included), so a content script has no media URL to
+// read, and Flow's "Download media" hands the browser a **blob:** URL it built itself,
+// which cannot be re-requested. So we let that download run and just rename it: Flow
+// names clips after the prompt ("Character_rolling_tire_across_grass_….mp4"), which
+// monitor.py's DownloadsHandler ignores, while `reel_XXXX-scene-NN-vdo.mp4` is exactly
+// what it files into working/.
+//
+// Only ONE rename is armed at a time: DownloadItems carry no tabId, so with parallel
+// slots two simultaneous downloads could not be told apart, and a mix-up would save a
+// clip under another scene's name. A second slot asking while one is armed is refused
+// and retries its scene. If the arm times out, the file simply keeps Flow's own name
+// and is ignored — a visible timeout rather than a silently mislabelled video.
+let _clipRename = null;   // { filename, resolve, timer }
+
+function _finishClipRename(ok) {
+    if (!_clipRename) return;
+    const pending = _clipRename;
+    _clipRename = null;
+    clearTimeout(pending.timer);
+    pending.resolve(ok);
+}
+
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    if (!_clipRename) { suggest(); return; }
+    const looksLikeClip = /\.mp4$/i.test(item.filename || '');
+    if (!looksLikeClip) { suggest(); return; }
+    const filename = _clipRename.filename;
+    suggest({ filename, conflictAction: 'overwrite' });
+    _finishClipRename(true);
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action !== 'expectClipDownload') return false;
+    if (_clipRename) { sendResponse({ ok: false, error: 'a clip rename is already armed' }); return true; }
+    const timer = setTimeout(() => _finishClipRename(false), msg.timeoutMs || 90000);
+    _clipRename = { filename: msg.filename, timer, resolve: ok => sendResponse({ ok }) };
+    return true;   // sendResponse fires later, from the downloads listener
+});
 
 // ── fillSlate: run Slate manipulation in the page's MAIN world ───────────────
 // Content scripts run in an isolated world and cannot access React fiber or
@@ -915,7 +956,7 @@ async function handleMessage(msg, sender) {
         await saveState(state);
 
         const newTab = await chrome.tabs.create({
-            url: 'https://labs.google/fx/th/tools/flow',
+            url: PHASE_URL.videos,
             active: false
         });
         // Keep this background tab from being frozen/discarded by Memory Saver.

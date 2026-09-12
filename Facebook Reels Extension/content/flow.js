@@ -109,70 +109,112 @@ async function waitForCompose() {
     await sleep(3000);
 }
 
-async function configureVideoSettings(aspectRatio = '9:16') {
-    const vh = window.innerHeight;
-    log('Configuring settings...');
+// Every label in the settings panel is an icon-ligature glued to its text —
+// "videocamVideo", "crop_freeFrames", "crop_9_169:16" — so all matching here is
+// suffix/substring, never equality. Thai labels stay for the older Flow UI.
+function settingsPanelOpen() {
+    return [...document.querySelectorAll('[role="radio"], [role="tab"], button')]
+        .some(el => isVisible(el) && /(^|[a-z_])(Image|Video|วิดีโอ)$/.test((el.textContent || '').trim()));
+}
 
-    // Click the model pill (shortest button in bottom-half containing "x")
-    const btns = [...document.querySelectorAll('button, [role="button"]')]
-        .filter(el => {
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.top > vh * 0.6;
-        })
-        .sort((a, b) => a.textContent.length - b.textContent.length);
-
-    for (const btn of btns) {
-        if (/\dx/.test(btn.textContent) && btn.textContent.length <= 80) {
-            btn.click(); await sleep(800); log('Settings pill clicked'); break;
-        }
-    }
-
-    // Click วิดีโอ tab
-    for (const el of document.querySelectorAll('button, [role="tab"]')) {
+// Click the first visible control whose trimmed text matches `re`; returns that text.
+function clickByText(re, selector = 'button, [role="radio"], [role="tab"], [role="option"]') {
+    for (const el of document.querySelectorAll(selector)) {
+        if (el.getAttribute('aria-label') === 'Settings trigger') continue;   // never re-click the pill
         const t = (el.textContent || '').trim();
-        if ((t === 'วิดีโอ' || t === 'Video') && isVisible(el)) {
-            el.click(); await sleep(600); log('Tab: วิดีโอ'); break;
+        if (re.test(t) && isVisible(el)) {
+            dispatchPointerClick(el);
+            try { HTMLElement.prototype.click.call(el); } catch {}
+            return t;
         }
     }
+    return null;
+}
 
-    await sleep(400);
+async function openSettingsPanel() {
+    // Flow remembers whether the panel was left open. Clicking the pill then CLOSES it
+    // and the following click lands on the page behind, so only click when it is shut.
+    if (settingsPanelOpen()) { log('Settings panel already open'); return true; }
 
-    // Aspect ratio
+    const trigger = findVisible('[aria-label="Settings trigger"]');
+    if (trigger) {
+        dispatchPointerClick(trigger);
+        try { HTMLElement.prototype.click.call(trigger); } catch {}
+        await sleep(900);
+        if (settingsPanelOpen()) { log('Settings panel opened'); return true; }
+    }
+
+    // Older Flow UI: the shortest bottom-bar pill carrying a multiplier or model name.
+    const vh = window.innerHeight;
+    const pills = [...document.querySelectorAll('button, [role="button"]')]
+        .filter(el => isVisible(el) && el.getBoundingClientRect().top > vh * 0.6)
+        .sort((a, b) => a.textContent.length - b.textContent.length);
+    for (const btn of pills) {
+        const t = btn.textContent || '';
+        if (t.length <= 80 && (/\dx|x\d/.test(t) || /Nano Banana|Omni|Veo|Imagen/.test(t))) {
+            btn.click(); await sleep(900);
+            if (settingsPanelOpen()) { log('Settings panel opened (fallback pill)'); return true; }
+        }
+    }
+    log('WARNING: settings panel did not open');
+    return false;
+}
+
+async function configureVideoSettings(aspectRatio = '9:16') {
+    log('Configuring settings...');
+    if (!await openSettingsPanel()) throw new Error('SELECTOR: settings panel would not open');
+
+    log(clickByText(/(^|[a-z_])(Video|วิดีโอ)$/) ? 'Mode: Video' : 'WARNING: Video mode not found');
+    await sleep(700);
+
+    // Frames, not Ingredients — this is what puts the Start/End frame slots in the
+    // compose bar, and the scene image goes into Start. Absent on the older UI.
+    if (clickByText(/(^|[a-z_])(Frames|เฟรม)$/)) { log('Source: Frames'); await sleep(700); }
+
+    // Aspect ratio — "crop_9_169:16". Skip the pill, whose own text also carries the icon.
     const iconName = aspectRatio === '9:16' ? 'crop_9_16' : 'crop_16_9';
-    for (const el of document.querySelectorAll("button, [role='option'], [aria-label]")) {
+    for (const el of document.querySelectorAll("button, [role='radio'], [role='option']")) {
+        if (el.getAttribute('aria-label') === 'Settings trigger') continue;
         const combined = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase();
-        if (combined.includes(aspectRatio.toLowerCase()) || combined.includes(iconName.toLowerCase())) {
-            el.click(); await sleep(300); log(`Aspect ratio: ${aspectRatio}`); break;
+        if ((combined.includes(aspectRatio.toLowerCase()) || combined.includes(iconName)) && isVisible(el)) {
+            dispatchPointerClick(el); await sleep(300); log(`Aspect ratio: ${aspectRatio}`); break;
         }
     }
 
-    // 1x multiplier
-    for (const el of document.querySelectorAll("button, [role='option']")) {
-        if ((el.textContent || '').trim() === '1x' && isVisible(el)) {
-            el.click(); await sleep(300); log('Set: 1x'); break;
-        }
+    // One output per prompt — "x1" now, "1x" on the older UI.
+    log(clickByText(/^(x1|1x)$/) ? 'Set: 1 output' : 'WARNING: 1-output control not found');
+    await sleep(300);
+
+    // Model family. The trigger button shows the CURRENT model, so its own text can
+    // contain "Lite"/"Lower Priority" — pick from the menu only, never the trigger.
+    const modelBtn = findVisible('[aria-label="Select model family"]')
+        || [...document.querySelectorAll('button')].find(b => isVisible(b) && /Veo|Omni/.test(b.textContent || ''));
+    if (modelBtn) {
+        dispatchPointerClick(modelBtn);
+        try { HTMLElement.prototype.click.call(modelBtn); } catch {}
+        await sleep(1200);
+    } else {
+        log('WARNING: model family button not found');
     }
 
-    // Open Veo model dropdown
-    for (const btn of document.querySelectorAll('button')) {
-        if ((btn.textContent || '').includes('Veo') && isVisible(btn)) {
-            btn.click(); await sleep(800); log('Veo dropdown opened'); break;
-        }
-    }
-    await sleep(500); // extra wait for dropdown to render
-
-    // Select Lite option — retry up to 3x in case dropdown is still animating
-    let liteFound = false;
-    for (let attempt = 0; attempt < 3 && !liteFound; attempt++) {
-        if (attempt > 0) await sleep(600);
-        for (const el of document.querySelectorAll("[role='option'], [role='menuitem'], li, button")) {
-            if ((el.textContent || '').includes('Lite') && isVisible(el)) {
+    const pickModel = re => {
+        for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], li')) {
+            const t = (el.textContent || '').trim();
+            if (re.test(t) && isVisible(el)) {
                 dispatchPointerClick(el);
-                await sleep(400); log('Set: Veo Lite'); liteFound = true; break;
+                try { HTMLElement.prototype.click.call(el); } catch {}
+                return t;
             }
         }
+        return null;
+    };
+    let modelSet = null;
+    for (let attempt = 0; attempt < 3 && !modelSet; attempt++) {
+        if (attempt > 0) await sleep(700);
+        modelSet = pickModel(/Lower Priority/) || pickModel(/Lite/);
     }
-    if (!liteFound) log('WARNING: Veo Lite option not found');
+    log(modelSet ? `Model: ${modelSet}` : 'WARNING: Veo Lite option not found');
+    await sleep(400);
 
     // Close settings panel
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -188,7 +230,11 @@ async function configureVideoSettings(aspectRatio = '9:16') {
 
 function agentPanelIsOpen() {
     const body = document.body.innerText || '';
-    return body.includes('Omni') || body.toLowerCase().includes('keyboard shortcuts');
+    if (body.toLowerCase().includes('keyboard shortcuts')) return true;
+    // "Omni" on its own is no longer a tell: it is also the name of Flow's default video
+    // model ("Omni 1.1 Flash"), which sits in the compose bar on every project. Require
+    // the panel's own ✕ as well, or this fires on every run and Escapes 4× for nothing.
+    return body.includes('Omni') && !!findAgentPanelCloseButton();
 }
 
 function findAgentPanelCloseButton() {
@@ -248,13 +294,16 @@ function isEnabled(el) {
     return !!el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
 }
 
-// The Flow media browser is "open" when its "อัปโหลดสื่อ / Upload media" button is on
-// screen. This text is stable across BOTH the classic "Start frame" layout and the new
-// Agent "+" layout, so it's our reliable open/closed signal.
+// The Flow media picker is "open" when it offers a way to attach media. On the current
+// UI that is the "Select a frame image" dialog (and its Add-to-prompt button); on the
+// older one it was the "อัปโหลดสื่อ / Upload media" browser. Either signal counts, so
+// this stays a reliable open/closed test on both layouts.
 function mediaPanelOpen() {
+    if (/Select a frame image|เลือกภาพเฟรม/i.test(document.body.innerText || '')) return true;
     for (const el of document.querySelectorAll('button, [role="button"], a, li')) {
         const t = (el.textContent || '').trim();
-        if ((t.includes('อัปโหลดสื่อ') || t.includes('Upload media')) && isVisible(el)) return true;
+        if ((t.includes('อัปโหลดสื่อ') || t.includes('Upload media') ||
+             t.includes('เพิ่มไปยังพรอมต์') || t.includes('Add to prompt')) && isVisible(el)) return true;
     }
     return false;
 }
@@ -264,6 +313,10 @@ function mediaPanelOpen() {
 // its row container, and take the LEFT-most visible button. Correctness is guaranteed
 // not by this heuristic but by openMediaPanel() verifying the panel actually opened.
 function findComposePlusButton() {
+    // The current UI labels the button outright — take that whenever it is present.
+    const labelled = findVisible('[aria-label="Add ingredients to the prompt box"]');
+    if (labelled) return labelled;
+
     const box = findVisible('textarea') || findVisible('[contenteditable="true"]') || findVisible('[role="textbox"]');
     if (!box) return null;
     let container = box.parentElement || box;
@@ -271,7 +324,16 @@ function findComposePlusButton() {
         if ([...p.querySelectorAll('button, [role="button"]')].some(isVisible)) container = p;
         if (p.getBoundingClientRect().width > window.innerWidth * 0.9) break;  // stop before whole page
     }
-    const btns = [...container.querySelectorAll('button, [role="button"]')].filter(isVisible);
+    // Keep only buttons sitting on the compose row itself. Without this the walk can
+    // reach an ancestor that also holds the top nav, making the left-most button "Home"
+    // — clicking that navigates out of the project instead of opening media.
+    const boxRect = box.getBoundingClientRect();
+    const boxMid  = boxRect.top + boxRect.height / 2;
+    const btns = [...container.querySelectorAll('button, [role="button"]')].filter(el => {
+        if (!isVisible(el)) return false;
+        const r = el.getBoundingClientRect();
+        return Math.abs(r.top + r.height / 2 - boxMid) < 160;
+    });
     if (!btns.length) return null;
     btns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
     return btns[0];   // left-most button in the compose row = the "+" / add-media
@@ -461,75 +523,118 @@ async function clickAddToPrompt() {
     return false;
 }
 
+// Drop the file straight onto the compose bar's Start slot. Flow's own drop handler
+// ingests it into the project's media library. This replaces the old "open the media
+// browser → click Upload media → intercept the file input" dance: that browser no
+// longer exists, and Flow now creates its file input only for the duration of its own
+// click handler, so a content script (isolated world) can never capture it.
+async function dropFileIntoFlow(file) {
+    const target = [...document.querySelectorAll('button, [role="button"]')]
+        .find(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()))
+        || document.body;
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const r = target.getBoundingClientRect();
+    const opts = { bubbles: true, cancelable: true, dataTransfer: dt,
+                   clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    for (const type of ['dragenter', 'dragover', 'drop'])
+        target.dispatchEvent(new DragEvent(type, opts));
+    log(`Dropped ${file.name} onto "${(target.textContent || 'page').trim().slice(0, 12)}"`);
+}
+
+// Flow shows "<n>%" on the tile while a dropped file uploads. Let that clear before
+// opening the picker, so the picker lists a finished file rather than a partial one.
+async function waitForUploadFinished(maxWait = 120000) {
+    const end = Date.now() + maxWait;
+    await sleep(2000);
+    while (Date.now() < end) {
+        if (!/\b\d{1,3}%/.test(document.body.innerText || '')) return true;
+        await sleep(1500);
+    }
+    log('WARNING: upload progress never cleared — continuing anyway');
+    return false;
+}
+
+// Click the compose bar's Start slot to open the "Select a frame image" picker. The slot
+// does nothing while the project has no media, which is why this runs after the drop.
+// Two slot states: empty, where it reads "Start"; and — from scene 2 onward, since all
+// scenes share one project — still holding the previous scene's thumbnail, where the
+// word "Start" is gone and the slot is the "Image ingredient" chip. Clicking that chip
+// either reopens the picker or clears the slot back to "Start"; the loop copes with both.
+async function openFramePicker() {
+    for (let attempt = 0; attempt < 5; attempt++) {
+        if (mediaPanelOpen()) return true;
+        const slot = [...document.querySelectorAll('button, [role="button"]')]
+            .find(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()))
+            || findVisible('[aria-label="Image ingredient"]');
+        if (slot) {
+            dispatchPointerClick(slot);
+            try { HTMLElement.prototype.click.call(slot); } catch {}
+            await sleep(2200);
+            if (mediaPanelOpen()) { log('Frame picker opened'); return true; }
+        }
+        await sleep(1200);
+    }
+    return false;
+}
+
+// Select this scene's file by name. The picker tends to preselect the most recent
+// upload, but by scene 5 the project holds five images — never rely on that.
+async function selectPickerFile(filename) {
+    const end = Date.now() + 60000;
+    while (Date.now() < end) {
+        for (const el of document.querySelectorAll('[role="option"], [role="menuitem"], li, button')) {
+            if (!isVisible(el) || !(el.textContent || '').includes(filename)) continue;
+            dispatchPointerClick(el);
+            try { HTMLElement.prototype.click.call(el); } catch {}
+            await sleep(800);
+            log(`Selected in picker: ${filename}`);
+            return true;
+        }
+        await sleep(1000);
+    }
+    return false;
+}
+
+// True once THIS scene's image sits in the Start slot: the picker is closed, the slot
+// shows a thumbnail instead of the word "Start", and the attached chip carries this
+// filename. The name check matters from scene 2 on — the slot still holds the previous
+// scene's image, so "slot is not empty" alone would pass while nothing had changed.
+function frameAttached(filename) {
+    const body = document.body.innerText || '';
+    if (/Select a frame image|เลือกภาพเฟรม/i.test(body)) return false;
+    const slotEmpty = [...document.querySelectorAll('button, [role="button"]')]
+        .some(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()));
+    if (slotEmpty) return false;
+    return filename ? body.includes(filename) : true;
+}
+
 async function uploadSceneImage(blob, filename) {
     log(`Uploading: ${filename}...`);
     const file = new File([blob], filename, { type: 'image/png' });
 
-    // Step 1: Open the media browser — classic "Start" slot OR new compose "+",
-    // verified by panel-open detection so it works on any device/layout.
-    log('Step 1: Opening media browser...');
-    if (!await openMediaPanel()) {
-        throw new Error('SELECTOR: media browser panel did not open (Start / "+" not found)');
+    // Step 1: drop the file — Flow uploads it into the project's media library.
+    log('Step 1: Dropping file into Flow...');
+    await dropFileIntoFlow(file);
+    await waitForUploadFinished();
+
+    // Step 2: open the frame picker (Start slot); fall back to the old media browser.
+    log('Step 2: Opening frame picker...');
+    if (!await openFramePicker() && !await openMediaPanel()) {
+        throw new Error('SELECTOR: frame picker did not open (Start slot / "+" not found)');
     }
-    await jitter(1500, 1500); // settle after panel opens
+    await jitter(1200, 1200); // settle after the picker opens
 
-    // Step 2: Find "อัปโหลดสื่อ/Upload media" button, then click it while intercepting
-    // the file input's .click() call so the native OS dialog never opens.
-    // We capture the file input reference and inject our file directly.
-    // This mirrors Playwright's expect_file_chooser() used in the original bot.py.
-    log('Step 2: Finding อัปโหลดสื่อ and intercepting file input click...');
-    const uploadKeywords = ['อัปโหลดสื่อ', 'Upload media', 'Upload'];
-    let uploadBtn = null;
-    for (let attempt = 0; attempt < 10 && !uploadBtn; attempt++) {
-        await sleep(800);
-        for (const el of document.querySelectorAll('button, [role="button"], a, li')) {
-            const t = (el.textContent || '').trim();
-            if (uploadKeywords.some(k => t.includes(k)) && isVisible(el)) {
-                uploadBtn = el;
-                break;
-            }
-        }
-    }
-    if (!uploadBtn) log('WARNING: อัปโหลดสื่อ button not found — falling back to DOM lookup');
+    // Step 3: select the file we just uploaded, by name.
+    log('Step 3: Selecting the uploaded file...');
+    if (!await selectPickerFile(filename)) await waitForUploadComplete(filename, 60000);
 
-    // Override input[type=file].click() to suppress native dialog and capture element
-    let capturedInput = null;
-    const origInputClick = HTMLInputElement.prototype.click;
-    HTMLInputElement.prototype.click = function () {
-        if (this.type === 'file') { capturedInput = this; return; } // suppress OS dialog
-        origInputClick.call(this);
-    };
-    if (uploadBtn) uploadBtn.click();
-    // The file input click fires synchronously inside the button's event handler
-    HTMLInputElement.prototype.click = origInputClick; // restore immediately
-
-    // Fallback: if override didn't capture anything, check DOM directly
-    if (!capturedInput) capturedInput = document.querySelector("input[type='file']");
-    if (!capturedInput) {
-        // Some apps add the input asynchronously — wait briefly
-        try { await waitFor(() => document.querySelector("input[type='file']"), 5000, 300); }
-        catch {}
-        capturedInput = document.querySelector("input[type='file']");
-    }
-    if (!capturedInput) throw new Error('SELECTOR: File input not found — cannot upload image');
-
-    // Step 3: Inject file (equivalent to user selecting it through the file dialog)
-    log(`Step 3: Injecting file: ${filename}`);
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files').set.call(capturedInput, dt.files);
-    capturedInput.dispatchEvent(new Event('change', { bubbles: true }));
-    capturedInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-    // Step 4: Wait for the file to appear in the media browser list, then click
-    // it to select it — only after selection does "Add to Prompt" become available
-    log('Step 4: Waiting for file to appear in media browser and selecting it...');
-    await waitForUploadComplete(filename, 60000);
-
-    // Step 5: Click "เพิ่มไปยังพรอมต์/Add to Prompt"
-    log('Step 5: Clicking Add to Prompt...');
-    const added = await clickAddToPrompt();
-    if (!added) throw new Error('SELECTOR: Add to Prompt did not become available after upload');
+    // Step 4: clicking the entry normally attaches it and closes the picker outright,
+    // so "Add to prompt" is often already gone — click it only while it is still there.
+    log('Step 4: Attaching to the Start frame...');
+    if (!frameAttached(filename) && addToPromptVisible()) await clickAddToPrompt();
+    for (let i = 0; i < 8 && !frameAttached(filename); i++) await sleep(1000);
+    if (!frameAttached(filename)) throw new Error('SELECTOR: scene image was not attached to the Start frame');
     log(`✓ Image attached to prompt: ${filename}`);
 }
 
@@ -625,8 +730,22 @@ async function clickGenerate() {
     throw new Error('SELECTOR: Generate (arrow_forward) button not found');
 }
 
+// The current Flow UI renders each finished clip as a thumbnail and plays it into a
+// <canvas> — there is no <video> element anywhere in the page, shadow roots included.
+// Counting <video> therefore returned 0 forever and every generation looked like a
+// timeout. The older UI did keep <video> in the grid, hence the max of the two.
 function countVideoClips() {
-    return document.querySelectorAll('video').length;
+    return Math.max(
+        document.querySelectorAll('img[alt="Generated video thumbnail"]').length,
+        document.querySelectorAll('video').length);
+}
+
+// Newest generated-clip tile (the grid is newest-first), or null.
+function newestClipTile() {
+    const tiles = [...document.querySelectorAll('img[alt="Generated video thumbnail"]')].filter(isVisible);
+    if (!tiles.length) return null;
+    tiles.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    return tiles[0];
 }
 
 async function waitForVideoReady(clipsBefore, timeout = 150) {
@@ -653,11 +772,10 @@ async function waitForVideoReady(clipsBefore, timeout = 150) {
             }
         }
 
-        // New clip ready?
-        const card = getVideoCardEl(clipsBefore);
-        if (card) {
-            const src = card.v.src || card.v.currentSrc || '';
-            if (src && !src.startsWith('blob:') && src.length > 10) {
+        // New clip ready? Disk-of-the-DOM: a finished clip adds a thumbnail tile.
+        if (countVideoClips() > clipsBefore) {
+            await sleep(4000);                       // let the tile settle
+            if (countVideoClips() > clipsBefore) {
                 log(`✓ Video ready at ${elapsed}s`);
                 return true;
             }
@@ -736,6 +854,74 @@ function getVideoCardEl(clipsBefore = -1) {
     if (!cards.length) return null;
     const minTop = Math.min(...cards.map(c => c.top));
     return cards.filter(c => c.top <= minTop + 20).sort((a, b) => a.left - b.left)[0];
+}
+
+async function leaveClipViewer() {
+    const back = findVisible('[aria-label="Back button to go to previous page"]');
+    if (back) {
+        dispatchPointerClick(back);
+        try { HTMLElement.prototype.click.call(back); } catch {}
+    } else {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    }
+    await sleep(1500);
+}
+
+// Current Flow UI: open the newest clip and drive "Download media" → "720p Original
+// size", with background.js renaming the resulting download to this scene's filename so
+// monitor.py's DownloadsHandler files it into working/. 720p is the resolution the clip
+// was generated at, so it is the only option that is both already rendered and free:
+// "1080p Upscaled" re-renders it and "4K Upscaled" spends 50 credits; 270p is a GIF.
+// Returns true once the rename was applied — the caller then waits for the file.
+async function downloadClipViaViewer(videoFilename) {
+    const tile = newestClipTile();
+    if (!tile) return false;
+    dispatchPointerClick(tile);
+    try { HTMLElement.prototype.click.call(tile); } catch {}
+    await sleep(4000);
+
+    const dl = findVisible('[aria-label="Download media"]');
+    if (!dl) {
+        log('Download media button not found in the clip viewer');
+        await leaveClipViewer();
+        return false;
+    }
+
+    // Arm the rename BEFORE the click — the reply lands once the download starts.
+    const armed = chrome.runtime
+        .sendMessage({ action: 'expectClipDownload', filename: videoFilename, timeoutMs: 90000 })
+        .catch(() => null);
+
+    dispatchPointerClick(dl);
+    try { HTMLElement.prototype.click.call(dl); } catch {}
+    await sleep(2000);
+
+    let picked = null;
+    outer:
+    for (const want of [/Original size/i, /720p/i, /1080p/i]) {
+        for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], li, button')) {
+            if (!isVisible(el)) continue;
+            if (el.getAttribute('aria-label') === 'Download media') continue;
+            const t = (el.textContent || '').trim();
+            if (!t || /4K|GIF/i.test(t)) continue;       // never spend credits
+            if (want.test(t)) {
+                dispatchPointerClick(el);
+                try { HTMLElement.prototype.click.call(el); } catch {}
+                picked = t.slice(0, 40);
+                break outer;
+            }
+        }
+    }
+    if (!picked) log('No safe download resolution offered');
+
+    const resp = await armed;
+    await leaveClipViewer();
+    if (resp && resp.ok) {
+        log(`Clip download started (${picked}) → ${videoFilename}`);
+        return true;
+    }
+    log(`Clip download not captured${resp && resp.error ? ` (${resp.error})` : ''}`);
+    return false;
 }
 
 async function getContextMenuVideoUrl(cardEl) {
@@ -923,7 +1109,11 @@ async function runVideos(project) {
         await clearSceneFails(pid, project.scenes);
         await clickNewProject();
         await waitForCompose();
-        log('⏳ Waiting 20s — please configure model, ratio, quantity and dismiss any panels...');
+        // Set Video / Frames / ratio / x1 / Veo Lite automatically. The 20s window below
+        // is now a chance to correct that, rather than the only way it ever gets set.
+        try { await configureVideoSettings(ratio); }
+        catch (e) { log(`Auto-configure failed (${e.message}) — set it by hand in the next 20s`); }
+        log('⏳ Waiting 20s — check model, ratio and quantity; dismiss any panels...');
         await sleep(20000);
         await sleep(500);
     }
@@ -997,13 +1187,23 @@ async function runVideos(project) {
                 const videoFilename = `${pid}-scene-${nn}-vdo.mp4`;
                 const card = getVideoCardEl(clipsBefore);
 
-                // Primary: context-menu 1080p URL → native browser download
-                const menuUrl = card ? await getContextMenuVideoUrl(card.el) : null;
-                if (menuUrl) {
-                    await chrome.runtime.sendMessage({
-                        action: 'downloadVideo', videoUrl: menuUrl, filename: videoFilename
-                    });
-                    log(`Native download triggered: ${videoFilename}`);
+                // Primary (current UI): clip viewer → Download media, renamed in flight
+                // by background.js so monitor.py files it into working/.
+                let started = await downloadClipViaViewer(videoFilename);
+
+                // Fallback (legacy UI): the card's right-click menu yields a real URL.
+                if (!started) {
+                    const menuUrl = card ? await getContextMenuVideoUrl(card.el) : null;
+                    if (menuUrl) {
+                        await chrome.runtime.sendMessage({
+                            action: 'downloadVideo', videoUrl: menuUrl, filename: videoFilename
+                        });
+                        log(`Native download triggered: ${videoFilename}`);
+                        started = true;
+                    }
+                }
+
+                if (started) {
                     log(`Waiting for ${videoFilename} to appear in working/...`);
                     const appeared = await waitForFileInWorking(page, videoFilename, 180000);
                     if (!appeared) {

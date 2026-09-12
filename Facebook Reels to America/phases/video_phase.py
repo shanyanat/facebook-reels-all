@@ -3,9 +3,9 @@ phases/video_phase.py
 Playwright automation for Google Flow video generation.
 
 For each pending scene (image_status=done, video_status=pending):
-  - Navigate to labs.google/fx/th/tools/flow → New project
+  - Navigate to flow.google.com → New project
   - Upload scene image → paste video prompt → configure settings
-  - Generate → wait → download 1080p video
+  - Generate → wait → download the clip (720p Original size)
   - Save to pending/{project_id}-scene-NN.mp4
 
 Usage:
@@ -26,7 +26,7 @@ from playwright.async_api import TimeoutError as PwTimeout
 
 BASE_DIR = Path(__file__).parent.parent
 CHROME_PROFILE = Path("C:/temp/chrome-bot")
-FLOW_URL = "https://labs.google/fx/th/tools/flow"
+FLOW_URL = "https://flow.google.com/"
 
 sys.path.insert(0, str(BASE_DIR))
 from parse_analysis import load_contents, save_contents
@@ -120,6 +120,7 @@ async def connect_chrome():
             "--start-maximized",
         ],
         ignore_default_args=["--enable-automation"],
+        accept_downloads=True,   # the clip viewer's Download media route needs this
     )
     await context.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
@@ -378,63 +379,26 @@ async def click_upload_image(page: Page):
     raise RuntimeError("'อัปโหลดรูปภาพ' / Upload image option not found")
 
 
-async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
-    """
-    Full video-mode upload flow:
-      1. Click เริ่ม (Start frame slot) → media browser opens
-      2. Upload image via อัปโหลดสื่อ button or hidden file input
-      3. Click เพิ่มไปยังพรอมต์ to attach the image to the frame
-    """
-    log("Trying Start frame slot upload...")
-
-    # Step 1: Click เริ่ม to open the media browser
+async def _legacy_media_browser_upload(page: Page, image_path: Path) -> bool:
+    """Older Flow UI: the Start slot opened a media browser with its own อัปโหลดสื่อ button."""
     clicked = await page.evaluate("""() => {
-        // Exact-text match for เริ่ม/Start (avoid timestamps or project cards)
-        for (const el of document.querySelectorAll(
-            'button, [role="button"], div[class], span[class]'
-        )) {
+        for (const el of document.querySelectorAll('button, [role="button"], div[class], span[class]')) {
             const r = el.getBoundingClientRect();
             if (r.width === 0 || r.height === 0) continue;
-            if (r.top < 400 || r.top > 700) continue;
             const txt = (el.textContent || '').trim();
-            if (txt === 'เริ่ม' || txt === 'Start' || txt === 'เริ่มต้น') {
-                el.click();
-                return txt + ' at (' + Math.round(r.left) + ',' + Math.round(r.top) + ')';
-            }
-        }
-        // Spatial fallback: left of swap_horiz button
-        const swapBtn = [...document.querySelectorAll('button')]
-            .find(b => (b.textContent||'').includes('swap_horiz'));
-        if (!swapBtn) return null;
-        const sr = swapBtn.getBoundingClientRect();
-        for (const xOff of [100, 70, 140, 50]) {
-            const x = sr.left - xOff;
-            const y = sr.top + sr.height / 2;
-            if (x < 50) continue;
-            const el = document.elementFromPoint(x, y);
-            if (!el || el === swapBtn || el === document.body) continue;
-            if (el.getBoundingClientRect().left < 50) continue;
-            el.click();
-            return 'spatial xOff=' + xOff + ' at (' + Math.round(x) + ',' + Math.round(y) + ')';
+            if (txt === 'เริ่ม' || txt === 'Start' || txt === 'เริ่มต้น') { el.click(); return txt; }
         }
         return null;
     }""")
-
     if not clicked:
-        log("เริ่ม (Start frame slot) not found")
         return False
+    await page.wait_for_timeout(1500)
 
-    log(f"Clicked Start frame: {clicked}")
-    await page.wait_for_timeout(1500)  # wait for media browser panel to open
-
-    # Step 2: Upload image — try อัปโหลดสื่อ button (opens file chooser) first
-    upload_done = False
     for sel in [
         "button:has-text('อัปโหลดสื่อ')",
         "a:has-text('อัปโหลดสื่อ')",
         "[role='button']:has-text('อัปโหลดสื่อ')",
         "button:has-text('Upload media')",
-        "button:has-text('Upload')",
     ]:
         loc = page.locator(sel).first
         if await loc.count() and await loc.is_visible():
@@ -445,29 +409,132 @@ async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
                 await fc.set_files(str(image_path))
                 await page.wait_for_timeout(3000)
                 log(f"Uploaded via อัปโหลดสื่อ: {image_path.name}")
-                upload_done = True
-                break
+                return True
             except PwTimeout:
                 log(f"File chooser timed out for '{sel}'")
 
-    if not upload_done:
-        # Fallback: hidden <input type="file"> inside the media browser panel
-        fi = page.locator("input[type='file']").last
-        if await fi.count():
-            await fi.set_input_files(str(image_path))
-            await page.wait_for_timeout(3000)
-            log(f"Uploaded via hidden file input: {image_path.name}")
-            upload_done = True
+    fi = page.locator("input[type='file']").last
+    if await fi.count():
+        await fi.set_input_files(str(image_path))
+        await page.wait_for_timeout(3000)
+        log(f"Uploaded via hidden file input: {image_path.name}")
+        return True
+    return False
 
-    if not upload_done:
-        log("Image upload failed — no upload button or file input found")
-        await page.keyboard.press("Escape")
+
+async def _wait_for_upload_finished(page: Page, max_wait_ms: int = 120000) -> bool:
+    """Flow paints "<n>%" on the tile while an upload runs. Wait for that to clear, so
+    the frame picker lists a finished file rather than a partial one."""
+    await page.wait_for_timeout(2000)
+    deadline = time.time() + max_wait_ms / 1000
+    while time.time() < deadline:
+        body = await page.evaluate("() => document.body.innerText") or ""
+        if not re.search(r"\b\d{1,3}%", body):
+            return True
+        await page.wait_for_timeout(1500)
+    log("WARNING: upload progress never cleared — continuing anyway")
+    return False
+
+
+async def _open_frame_picker(page: Page) -> bool:
+    """Click the Start frame slot to open the "Select a frame image" picker.
+
+    Two slot states to handle: empty, where it reads "Start"; and — from scene 2 onward,
+    since all scenes share one project — still holding the previous scene's thumbnail,
+    where the word "Start" is gone and the slot is the "Image ingredient" chip. Clicking
+    that chip either reopens the picker or clears the slot back to "Start"; the loop
+    copes with both. The slot does nothing at all until the project has media, which is
+    why this runs after the upload rather than before it.
+    """
+    for attempt in range(5):
+        if await page.locator("button:has-text('Add to prompt')").count():
+            return True
+        for loc in (page.get_by_role("button", name="Start", exact=True).first,
+                    page.locator("[aria-label='Image ingredient']").first):
+            if await loc.count() and await loc.is_visible():
+                await loc.click()
+                await page.wait_for_timeout(2500)
+                if await page.locator("button:has-text('Add to prompt')").count():
+                    log("Frame picker opened")
+                    return True
+                break
+        await page.wait_for_timeout(1200)
+    return False
+
+
+async def _frame_attached(page: Page, filename: str = "") -> bool:
+    """True once THIS scene's image sits in the Start slot: the picker is closed, the
+    slot shows a thumbnail instead of the word "Start", and the attached chip carries
+    this filename. The name check matters from scene 2 on — the slot still holds the
+    previous scene's image, so "slot is not empty" alone would pass unchanged."""
+    return await page.evaluate("""([filename]) => {
+        const vis = el => { const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+        const body = document.body.innerText || '';
+        if (/Select a frame image|เลือกภาพเฟรม/i.test(body)) return false;
+        const slotEmpty = [...document.querySelectorAll('button, [role="button"]')]
+            .some(el => vis(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()));
+        if (slotEmpty) return false;
+        return filename ? body.includes(filename) : true;
+    }""", [filename])
+
+
+async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
+    """
+    Video-mode upload on the current Flow UI:
+      1. "Add media menu" (+) -> "Upload" -> file chooser; the image lands in the
+         project's media library
+      2. Click the Start frame slot -> the "Select a frame image" picker opens
+      3. Click the entry matching the filename, then "Add to prompt"
+    Falls back to the old Start-slot media browser when the new menu is absent.
+    """
+    log("Uploading scene image into the project library...")
+
+    uploaded = False
+    add_menu = page.locator("[aria-label='Add media menu']").first
+    if await add_menu.count() and await add_menu.is_visible():
+        try:
+            async with page.expect_file_chooser(timeout=15000) as fc_info:
+                await add_menu.click()
+                await page.wait_for_timeout(800)
+                await page.get_by_role("menuitem", name=re.compile("Upload")).first.click()
+            fc = await fc_info.value
+            await fc.set_files(str(image_path))
+            log(f"Uploaded via Add media menu: {image_path.name}")
+            uploaded = True
+        except Exception as e:
+            log(f"Add media menu upload failed ({type(e).__name__}) — trying the old media browser")
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(500)
+
+    if not uploaded:
+        uploaded = await _legacy_media_browser_upload(page, image_path)
+    if not uploaded:
+        log("Image upload failed — no upload route worked")
         return False
 
-    # Step 3: Click เพิ่มไปยังพรอมต์ to attach the uploaded image to the frame
-    log("Waiting for เพิ่มไปยังพรอมต์ button...")
+    await _wait_for_upload_finished(page)
+
+    if not await _open_frame_picker(page):
+        log("WARNING: frame picker did not open after upload")
+        return False
+
+    # Select this scene's file by name — by scene 5 the picker holds five images, so
+    # the picker's own preselection is not something to rely on.
+    picked = page.locator(f"[role='option']:has-text('{image_path.name}')").first
+    if await picked.count():
+        await picked.click()
+        await page.wait_for_timeout(1500)
+        log(f"Selected in picker: {image_path.name}")
+    else:
+        log(f"NOTE: '{image_path.name}' not listed — using the picker's preselection")
+
+    # Clicking the entry normally attaches it and closes the picker outright, so
+    # "Add to prompt" is often already gone. Click it only while it is still there.
     for attempt in range(4):
-        await page.wait_for_timeout(1000 + attempt * 500)
+        if await _frame_attached(page, image_path.name):
+            log("Scene image attached to the Start frame ✓")
+            return True
         for sel in [
             "button:has-text('เพิ่มไปยังพรอมต์')",
             "[role='button']:has-text('เพิ่มไปยังพรอมต์')",
@@ -476,11 +543,14 @@ async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
             loc = page.locator(sel).first
             if await loc.count() and await loc.is_visible():
                 await loc.click()
-                await page.wait_for_timeout(1000)
-                log("Clicked: เพิ่มไปยังพรอมต์ ✓")
-                return True
+                log("Clicked: Add to prompt")
+                break
+        await page.wait_for_timeout(1200 + attempt * 500)
 
-    log("WARNING: เพิ่มไปยังพรอมต์ not found after upload")
+    if await _frame_attached(page, image_path.name):
+        log("Scene image attached to the Start frame ✓")
+        return True
+    log("WARNING: scene image was not attached to the Start frame")
     return False
 
 
@@ -553,133 +623,145 @@ async def fill_video_prompt(page: Page, prompt: str):
     log(f"Typed prompt via execCommand ({len(prompt)} chars)")
 
 
-async def configure_video_settings(page: Page, aspect_ratio: str = "9:16"):
-    """Click the model settings pill → วิดีโอ tab → 9:16 / 1x / Veo Lite / 8s."""
-    log("Opening settings panel (clicking model pill)...")
-    await page.wait_for_timeout(500)
+async def _settings_panel_open(page: Page) -> bool:
+    return await page.evaluate("""() => {
+        const vis = el => { const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+        return [...document.querySelectorAll('[role="radio"], [role="tab"], button')]
+            .some(el => vis(el) && /(^|[a-z_])(Image|Video|วิดีโอ)$/.test((el.textContent || '').trim()));
+    }""")
 
-    # Step 1: Click the pill — find the SHORTEST button in the compose bar that contains
-    # a multiplier (e.g. "2x", "1x"). The pill text is short like "🍌 Nano Banana 2crop_16_9x2"
-    # but parent containers are longer. We pick shortest to avoid clicking a container.
-    pill_text = await page.evaluate("""() => {
-        const vh = window.innerHeight;
-        let best = null;
-        let bestLen = Infinity;
-        for (const el of document.querySelectorAll('button, [role="button"]')) {
-            const r = el.getBoundingClientRect();
-            if (r.width === 0 || r.height === 0) continue;
-            if (r.top < vh * 0.6) continue;
-            const txt = (el.textContent || '').trim();
-            if (/\\d+x/.test(txt) && txt.length < bestLen && txt.length <= 80) {
-                best = el;
-                bestLen = txt.length;
+
+async def _click_by_text(page: Page, pattern: str,
+                         selector: str = 'button, [role="radio"], [role="tab"], [role="option"]'):
+    """Click the first visible control whose trimmed text matches `pattern`."""
+    return await page.evaluate(
+        """([pattern, selector]) => {
+            const vis = el => { const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+            const re = new RegExp(pattern);
+            for (const el of document.querySelectorAll(selector)) {
+                if (el.getAttribute('aria-label') === 'Settings trigger') continue;
+                const t = (el.textContent || '').trim();
+                if (re.test(t) && vis(el)) { el.click(); return t; }
             }
-        }
-        if (best) {
-            best.click();
-            return (best.textContent || '').trim().substring(0, 60);
-        }
-        // Fallback: any element containing 'Nano Banana' or 'Imagen'
-        for (const el of document.querySelectorAll('button, [role="button"]')) {
-            const r = el.getBoundingClientRect();
-            if (r.width === 0 || r.height === 0) continue;
-            if (r.top < vh * 0.6) continue;
-            const txt = (el.textContent || '').trim();
-            if (txt.includes('Nano Banana') || txt.includes('Imagen') || txt.includes('Lumiere')) {
-                el.click();
-                return txt.substring(0, 60);
+            return null;
+        }""", [pattern, selector])
+
+
+async def configure_video_settings(page: Page, aspect_ratio: str = "9:16"):
+    """Settings pill -> Video -> Frames -> 9:16 -> x1 -> Veo 3.1 Lite [Lower Priority] -> 8s.
+
+    Every label in Flow's settings panel is an icon ligature glued to its text
+    ("videocamVideo", "crop_9_169:16", "x1"), so each match here is a substring or suffix
+    test, never an equality test. Thai labels are kept for the older Flow UI.
+    """
+    log("Opening settings panel...")
+
+    # Flow remembers whether the panel was left open. Clicking the pill then CLOSES it
+    # and the next click lands on the page behind, so only click when it is shut.
+    if await _settings_panel_open(page):
+        log("Settings panel already open")
+    else:
+        opened = False
+        trigger = page.locator("[aria-label='Settings trigger']").first
+        if await trigger.count() and await trigger.is_visible():
+            await trigger.click()
+            await page.wait_for_timeout(900)
+            opened = await _settings_panel_open(page)
+        if not opened:
+            # Older UI: the shortest bottom-bar pill carrying a multiplier or model name.
+            pill = await page.evaluate("""() => {
+                const vh = window.innerHeight;
+                const pills = [...document.querySelectorAll('button, [role="button"]')]
+                  .filter(el => { const r = el.getBoundingClientRect();
+                      return r.width > 0 && r.height > 0 && r.top > vh * 0.6; })
+                  .sort((a, b) => a.textContent.length - b.textContent.length);
+                for (const b of pills) {
+                    const t = b.textContent || '';
+                    if (t.length <= 80 && (/\\dx|x\\d/.test(t) || /Nano Banana|Omni|Veo|Imagen/.test(t))) {
+                        b.click();
+                        return t.trim().substring(0, 60);
+                    }
+                }
+                return null;
+            }""")
+            await page.wait_for_timeout(900)
+            opened = await _settings_panel_open(page)
+            if pill:
+                log(f"Settings pill clicked: '{pill}'")
+        if not opened:
+            log("WARNING: settings panel did not open")
+
+    mode = await _click_by_text(page, r"(^|[a-z_])(Video|วิดีโอ)$")
+    log(f"Mode: {mode}" if mode else "WARNING: Video mode not found")
+    await page.wait_for_timeout(700)
+
+    # Frames, not Ingredients — this is what puts the Start/End frame slots in the
+    # compose bar, and the scene image goes into Start. Absent on the older UI.
+    if await _click_by_text(page, r"(^|[a-z_])(Frames|เฟรม)$"):
+        log("Source: Frames")
+        await page.wait_for_timeout(700)
+
+    # Aspect ratio — "crop_9_169:16". Skip the pill, whose own text carries the icon too.
+    icon_name = "crop_9_16" if aspect_ratio == "9:16" else "crop_16_9"
+    ratio = await page.evaluate(
+        """([ratio, icon]) => {
+            const vis = el => { const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+            for (const el of document.querySelectorAll("button, [role='radio'], [role='option']")) {
+                if (el.getAttribute('aria-label') === 'Settings trigger') continue;
+                const c = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase();
+                if ((c.includes(ratio.toLowerCase()) || c.includes(icon)) && vis(el)) {
+                    el.click();
+                    return (el.textContent || '').trim();
+                }
             }
+            return null;
+        }""", [aspect_ratio, icon_name])
+    log(f"Aspect ratio: {aspect_ratio}" if ratio else f"WARNING: aspect ratio {aspect_ratio} not found")
+    await page.wait_for_timeout(300)
+
+    # One output per prompt — "x1" now, "1x" on the older UI.
+    outputs = await _click_by_text(page, r"^(x1|1x)$")
+    log("Set: 1 output" if outputs else "WARNING: 1-output control not found")
+    await page.wait_for_timeout(300)
+
+    # Model family. The trigger shows the CURRENT model, so its own text can contain
+    # "Lite"/"Lower Priority" — open the menu, then pick from menu items only.
+    model_btn = page.locator("[aria-label='Select model family']").first
+    if await model_btn.count() and await model_btn.is_visible():
+        await model_btn.click()
+    else:
+        await _click_by_text(page, r"Veo|Omni", "button")
+    await page.wait_for_timeout(1200)
+
+    model = None
+    for attempt in range(3):
+        if attempt:
+            await page.wait_for_timeout(700)
+        model = (await _click_by_text(page, r"Lower Priority", '[role="menuitem"], [role="option"], li')
+                 or await _click_by_text(page, r"Lite", '[role="menuitem"], [role="option"], li'))
+        if model:
+            break
+    log(f"Model: {model}" if model else "WARNING: Veo Lite option not found")
+    await page.wait_for_timeout(400)
+
+    # 8s duration — already the default; only click when it is not selected.
+    duration = await page.evaluate("""() => {
+        const vis = el => { const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+        for (const el of document.querySelectorAll('button, [role="radio"], [role="option"]')) {
+            if ((el.textContent || '').trim() !== '8s' || !vis(el)) continue;
+            if (el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true')
+                return 'already 8s';
+            el.click();
+            return 'set 8s';
         }
         return null;
     }""")
-
-    if pill_text:
-        await page.wait_for_timeout(800)
-        log(f"Settings pill clicked: '{pill_text}'")
-    else:
-        log("WARNING: Settings pill not found")
-
-    # Step 2: Click วิดีโอ tab
-    for sel in ["button:has-text('วิดีโอ')", "[role='tab']:has-text('วิดีโอ')", "button:has-text('Video')"]:
-        loc = page.locator(sel).first
-        if await loc.count() and await loc.is_visible():
-            await loc.click()
-            await page.wait_for_timeout(600)
-            log("Selected: วิดีโอ mode ✓")
-            break
-
-    await page.wait_for_timeout(400)
-
-    # Step 3: Aspect ratio — use JS click to bypass overlay
-    ratio_set = False
-    icon_name = "crop_9_16" if aspect_ratio == "9:16" else "crop_16_9"
-    for sel in [
-        f"button:has-text('{aspect_ratio}')",
-        f"button:has-text('{icon_name}')",
-        f"[aria-label*='{aspect_ratio}']",
-        f"[role='option']:has-text('{aspect_ratio}')",
-    ]:
-        loc = page.locator(sel).first
-        if await loc.count() and await loc.is_visible():
-            await loc.evaluate("el => el.click()")
-            await page.wait_for_timeout(300)
-            log(f"Set aspect ratio: {aspect_ratio}")
-            ratio_set = True
-            break
-    if not ratio_set:
-        log(f"WARNING: Aspect ratio {aspect_ratio} button not found")
-
-    # Step 4: 1x multiplier — use JS click to bypass overlay
-    for sel in ["button:has-text('1x')", "[role='option']:has-text('1x')"]:
-        loc = page.locator(sel).first
-        if await loc.count() and await loc.is_visible():
-            await loc.evaluate("el => el.click()")
-            await page.wait_for_timeout(300)
-            log("Set: 1x")
-            break
-
-    # Step 5: Veo 3.1 - Lite [Lower Priority]
-    # The Veo button shows current model + dropdown arrow. Click it to open the list,
-    # then select the Lite option.
-    for veo_sel in ["button:has-text('Veo 3.1')", "button:has-text('Veo 3')", "button:has-text('Veo')"]:
-        veo_loc = page.locator(veo_sel).first
-        if await veo_loc.count() and await veo_loc.is_visible():
-            await veo_loc.click()
-            await page.wait_for_timeout(600)
-            log("Opened Veo model dropdown")
-            break
-
-    lite_set = False
-    for lite_sel in [
-        "[role='option']:has-text('Lite')",
-        "[role='option']:has-text('Lower Priority')",
-        "li:has-text('Lite')",
-        "button:has-text('Lite')",
-        "[role='listbox'] *:has-text('Lite')",
-    ]:
-        lite_loc = page.locator(lite_sel).first
-        if await lite_loc.count() and await lite_loc.is_visible():
-            await lite_loc.click()
-            await page.wait_for_timeout(300)
-            log("Set model: Veo 3.1 - Lite [Lower Priority] ✓")
-            lite_set = True
-            break
-    if not lite_set:
-        log("WARNING: 'Lite' model option not found — keeping current model")
-
-    # Step 6: 8s duration — skip if already active (it's the default)
-    for sel in ["button:has-text('8s')", "[role='option']:has-text('8s')"]:
-        loc = page.locator(sel).first
-        if await loc.count() and await loc.is_visible():
-            state = await loc.get_attribute("data-state")
-            aria_sel = await loc.get_attribute("aria-selected")
-            if state == "active" or aria_sel == "true":
-                log("Duration 8s: already active ✓")
-            else:
-                await loc.evaluate("el => el.click()")
-                await page.wait_for_timeout(300)
-                log("Set duration: 8s")
-            break
+    if duration:
+        log(f"Duration: {duration}")
 
     # Close settings panel
     await page.keyboard.press("Escape")
@@ -793,43 +875,13 @@ async def wait_for_video_ready(
             log(f"ERROR: Generation failed at {elapsed}s")
             return False
 
-        # New clip ready: count increased AND leftmost card's video has a real src
-        ready = await page.evaluate("""([n]) => {
-            const videos = [...document.querySelectorAll('video')];
-            if (videos.length <= n) return false;
-
-            // Walk up from each video to its card container, collect all cards
-            const cards = [];
-            for (const v of videos) {
-                let el = v.parentElement;
-                while (el && el !== document.body) {
-                    const r = el.getBoundingClientRect();
-                    if (r.width >= 80 && r.width <= 600 && r.height >= 80 && r.top > 40) {
-                        cards.push({ left: r.left, top: r.top, v });
-                        break;
-                    }
-                    el = el.parentElement;
-                }
-            }
-            if (!cards.length) return false;
-
-            // Find topmost row then pick leftmost (newest clip = top-left)
-            const minTop = Math.min(...cards.map(c => c.top));
-            const topRow = cards.filter(c => c.top <= minTop + 20);
-            topRow.sort((a, b) => a.left - b.left);
-            const newest = topRow[0].v;
-
-            if (newest.src && !newest.src.startsWith('blob:') && newest.src.length > 10)
-                return true;
-            if (newest.currentSrc && !newest.currentSrc.startsWith('blob:')
-                    && newest.currentSrc.length > 10)
-                return true;
-            return false;
-        }""", [clips_before])
-
-        if ready:
-            log(f"✓ Video ready at {elapsed}s")
-            return True
+        # A new finished clip has appeared in the grid.
+        if await _count_clips(page) > clips_before:
+            # Let the tile settle before the download step reaches for it.
+            await asyncio.sleep(4)
+            if await _count_clips(page) > clips_before:
+                log(f"✓ Video ready at {elapsed}s")
+                return True
 
         if elapsed > 0 and elapsed % 30 == 0:
             log(f"  {elapsed}s: still generating...")
@@ -841,8 +893,86 @@ async def wait_for_video_ready(
 
 
 async def _count_clips(page: Page) -> int:
-    """Return the current number of video elements on the page."""
-    return await page.evaluate("() => document.querySelectorAll('video').length")
+    """Number of finished generated clips in the project grid.
+
+    The current Flow UI renders each clip as a thumbnail (`img[alt="Generated video
+    thumbnail"]`) and only creates a `<video>` element once you open the clip, so
+    counting `<video>` returned 0 forever and every generation looked like a timeout.
+    The older UI did keep `<video>` in the grid — hence the max of the two.
+    """
+    return await page.evaluate("""() => Math.max(
+        document.querySelectorAll('img[alt="Generated video thumbnail"]').length,
+        document.querySelectorAll('video').length)""")
+
+
+async def _newest_video_tile(page: Page) -> dict | None:
+    """Centre point of the newest generated-clip tile (the grid is newest-first)."""
+    return await page.evaluate("""() => {
+        const vis = el => { const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+        const tiles = [...document.querySelectorAll('img[alt="Generated video thumbnail"]')].filter(vis);
+        if (!tiles.length) return null;
+        tiles.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+        const r = tiles[0].getBoundingClientRect();
+        return { count: tiles.length, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }""")
+
+
+async def _download_via_viewer(page: Page, dest_path: Path) -> bool:
+    """Current Flow UI: click the clip tile → "Download media" → "720p Original size".
+
+    720p is the resolution the clip was generated at, so it is the only option that is
+    both already rendered and free: "1080p Upscaled" re-renders it and "4K Upscaled"
+    spends 50 credits, so neither is ever picked automatically. The 270p option is a GIF.
+    """
+    tile = await _newest_video_tile(page)
+    if not tile:
+        return False
+    await page.mouse.click(tile["x"], tile["y"])
+    await page.wait_for_timeout(4000)
+
+    dl = page.locator("[aria-label='Download media']").first
+    if not (await dl.count() and await dl.is_visible()):
+        log("Download media button not found in the clip viewer")
+        return False
+    await dl.click()
+    await page.wait_for_timeout(2000)
+
+    try:
+        async with page.expect_download(timeout=120000) as dl_info:
+            picked = await page.evaluate("""() => {
+                const vis = el => { const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+                for (const want of [/Original size/i, /720p/i, /1080p/i]) {
+                    for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], li, button')) {
+                        if (!vis(el)) continue;
+                        if (el.getAttribute('aria-label') === 'Download media') continue;
+                        const t = (el.textContent || '').trim();
+                        if (!t || /4K|GIF/i.test(t)) continue;   // never spend credits
+                        if (want.test(t)) { el.click(); return t.slice(0, 40); }
+                    }
+                }
+                return null;
+            }""")
+        if not picked:
+            log("No safe download resolution offered")
+            return False
+        download = await dl_info.value
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        await download.save_as(str(dest_path))
+        log(f"Downloaded via clip viewer ({picked}): {dest_path.name}")
+        return True
+    except Exception as e:
+        log(f"Clip-viewer download failed ({type(e).__name__})")
+        return False
+    finally:
+        # Return to the grid so the next scene starts from the same place.
+        back = page.locator("[aria-label='Back button to go to previous page']").first
+        if await back.count() and await back.is_visible():
+            await back.click()
+        else:
+            await page.keyboard.press("Escape")
+        await page.wait_for_timeout(1500)
 
 
 async def _has_completed_video(page: Page) -> bool:
@@ -992,9 +1122,17 @@ async def _fetch_video_bytes(page: Page, url: str) -> bytes:
 
 
 async def download_video(page: Page, dest_path: Path) -> bool:
-    """Right-click video card → ดาวน์โหลด → 1080p/720p. Returns True on success.
-    Retries the menu download up to 3 times, then falls back to in-page fetch."""
+    """Save the newest clip. Returns True on success.
+
+    Current Flow UI first (clip tile → Download media → 720p Original size); the old
+    right-click-the-card path stays as the fallback, retried 3× then an in-page fetch.
+    """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # The current grid has no <video> elements at all, so the legacy path below can
+    # never find a card there.
+    if await _download_via_viewer(page, dest_path):
+        return True
 
     for dl_attempt in range(3):
         if dl_attempt > 0:
@@ -1293,10 +1431,17 @@ async def run(project: dict):
         await click_new_project(page)
         await wait_for_compose_bar(page, timeout=20000)
 
+        # Configure automatically first; the manual window below is now a chance to
+        # correct it, not the only way it gets set.
+        try:
+            await configure_video_settings(page, project.get("aspect_ratio", "9:16"))
+        except Exception as e:
+            log(f"Auto-configure failed ({type(e).__name__}: {e}) — set it by hand below")
+
         log("=" * 50)
-        log("[ACTION REQUIRED] Configure settings NOW:")
-        log("  Video → Frame → 9:16 → 1x → Veo Lite → 8s")
-        log("[WAITING 20s] Bot resumes automatically...")
+        log("[CHECK] Settings should now read:")
+        log("  Video → Frames → 9:16 → x1 → Veo 3.1 Lite [Lower Priority] → 8s")
+        log("[WAITING 20s] Fix them by hand if not; bot resumes automatically...")
         log("=" * 50)
         for countdown in range(20, 0, -10):
             log(f"  ...{countdown}s remaining")
