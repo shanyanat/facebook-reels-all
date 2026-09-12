@@ -462,21 +462,22 @@ async def _open_frame_picker(page: Page) -> bool:
     return False
 
 
-async def _frame_attached(page: Page, filename: str = "") -> bool:
-    """True once THIS scene's image sits in the Start slot: the picker is closed, the
-    slot shows a thumbnail instead of the word "Start", and the attached chip carries
-    this filename. The name check matters from scene 2 on — the slot still holds the
-    previous scene's image, so "slot is not empty" alone would pass unchanged."""
-    return await page.evaluate("""([filename]) => {
+async def _frame_attached(page: Page) -> bool:
+    """True once an image sits in the Start slot: the picker is closed and the slot holds
+    a thumbnail — the "Image ingredient" chip — instead of the word "Start".
+
+    This deliberately does not check the filename. The chip's name is not reliably part of
+    the page's rendered text, so matching it reported "not attached" for an image that was
+    plainly attached. That the slot holds THIS scene's image is guaranteed upstream, by
+    selecting the picker entry by name and treating a miss as fatal."""
+    return await page.evaluate("""() => {
         const vis = el => { const r = el.getBoundingClientRect();
             return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
-        const body = document.body.innerText || '';
-        if (/Select a frame image|เลือกภาพเฟรม/i.test(body)) return false;
-        const slotEmpty = [...document.querySelectorAll('button, [role="button"]')]
+        if (/Select a frame image|เลือกภาพเฟรม/i.test(document.body.innerText || '')) return false;
+        if ([...document.querySelectorAll('[aria-label="Image ingredient"]')].some(vis)) return true;
+        return ![...document.querySelectorAll('button, [role="button"]')]
             .some(el => vis(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()));
-        if (slotEmpty) return false;
-        return filename ? body.includes(filename) : true;
-    }""", [filename])
+    }""")
 
 
 async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
@@ -519,20 +520,22 @@ async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
         log("WARNING: frame picker did not open after upload")
         return False
 
-    # Select this scene's file by name — by scene 5 the picker holds five images, so
-    # the picker's own preselection is not something to rely on.
+    # Select this scene's file BY NAME. This is the step that guarantees the scene gets
+    # its own image: the picker preselects the most recent upload, which stops being the
+    # right one once the project holds several scenes. A miss is fatal rather than a
+    # silent fall-through to whatever happens to be selected.
     picked = page.locator(f"[role='option']:has-text('{image_path.name}')").first
-    if await picked.count():
-        await picked.click()
-        await page.wait_for_timeout(1500)
-        log(f"Selected in picker: {image_path.name}")
-    else:
-        log(f"NOTE: '{image_path.name}' not listed — using the picker's preselection")
+    if not await picked.count():
+        log(f"'{image_path.name}' was not listed in the frame picker")
+        return False
+    await picked.click()
+    await page.wait_for_timeout(1500)
+    log(f"Selected in picker: {image_path.name}")
 
     # Clicking the entry normally attaches it and closes the picker outright, so
     # "Add to prompt" is often already gone. Click it only while it is still there.
     for attempt in range(4):
-        if await _frame_attached(page, image_path.name):
+        if await _frame_attached(page):
             log("Scene image attached to the Start frame ✓")
             return True
         for sel in [
@@ -547,7 +550,7 @@ async def _try_first_frame_upload(page: Page, image_path: Path) -> bool:
                 break
         await page.wait_for_timeout(1200 + attempt * 500)
 
-    if await _frame_attached(page, image_path.name):
+    if await _frame_attached(page):
         log("Scene image attached to the Start frame ✓")
         return True
     log("WARNING: scene image was not attached to the Start frame")

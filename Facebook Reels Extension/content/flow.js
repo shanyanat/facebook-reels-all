@@ -12,16 +12,35 @@ const log = msg => {
 
 // ── DOM utilities ─────────────────────────────────────────────────────────────
 
+// Flow's newer UI is built on components that handle pointerdown/pointerup and ignore
+// anything that doesn't look like a real mouse: they check `button`, `buttons` and
+// `isPrimary`. A bare `el.click()`, or a PointerEvent missing those fields, does nothing
+// at all — that is why the frame picker never opened while the image uploaded fine, and
+// the run then looped re-uploading the same scene. Every synthetic click in this file
+// goes through here, so the full, correctly-shaped sequence is what they all send.
 function dispatchPointerClick(el) {
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
-    for (const type of ['pointerover','pointerenter','mouseover','mouseenter',
-                        'pointermove','mousemove','pointerdown','mousedown',
-                        'pointerup','mouseup','click']) {
-        el.dispatchEvent(new (type.startsWith('pointer') ? PointerEvent : MouseEvent)(type, opts));
-    }
+    const down = {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+        button: 0, buttons: 1, detail: 1,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true,
+        width: 1, height: 1, pressure: 0.5,
+    };
+    const up = { ...down, buttons: 0, pressure: 0 };   // no button held any more
+    el.dispatchEvent(new PointerEvent('pointerover', down));
+    el.dispatchEvent(new PointerEvent('pointerenter', down));
+    el.dispatchEvent(new MouseEvent('mouseover', down));
+    el.dispatchEvent(new MouseEvent('mouseenter', down));
+    el.dispatchEvent(new PointerEvent('pointermove', up));
+    el.dispatchEvent(new MouseEvent('mousemove', up));
+    el.dispatchEvent(new PointerEvent('pointerdown', down));
+    el.dispatchEvent(new MouseEvent('mousedown', down));
+    el.dispatchEvent(new PointerEvent('pointerup', up));
+    el.dispatchEvent(new MouseEvent('mouseup', up));
+    el.dispatchEvent(new MouseEvent('click', up));
 }
 
 function isVisible(el) {
@@ -77,7 +96,7 @@ async function clickNewProject() {
         for (const name of names) {
             for (const el of document.querySelectorAll('button, [role="button"], a')) {
                 if ((el.textContent || '').trim().includes(name) && isVisible(el)) {
-                    el.click();
+                    dispatchPointerClick(el);
                     await sleep(2500);
                     log(`New project clicked: "${name}"`);
                     return;
@@ -118,7 +137,6 @@ function clickByText(re, selector = 'button, [role="radio"], [role="tab"], [role
         const t = (el.textContent || '').trim();
         if (re.test(t) && isVisible(el)) {
             dispatchPointerClick(el);
-            try { HTMLElement.prototype.click.call(el); } catch {}
             return t;
         }
     }
@@ -133,7 +151,6 @@ async function openSettingsPanel() {
     const trigger = findVisible('[aria-label="Settings trigger"]');
     if (trigger) {
         dispatchPointerClick(trigger);
-        try { HTMLElement.prototype.click.call(trigger); } catch {}
         await sleep(900);
         if (settingsPanelOpen()) { log('Settings panel opened'); return true; }
     }
@@ -185,7 +202,6 @@ async function configureVideoSettings(aspectRatio = '9:16') {
         || [...document.querySelectorAll('button')].find(b => isVisible(b) && /Veo|Omni/.test(b.textContent || ''));
     if (modelBtn) {
         dispatchPointerClick(modelBtn);
-        try { HTMLElement.prototype.click.call(modelBtn); } catch {}
         await sleep(1200);
     } else {
         log('WARNING: model family button not found');
@@ -196,7 +212,6 @@ async function configureVideoSettings(aspectRatio = '9:16') {
             const t = (el.textContent || '').trim();
             if (re.test(t) && isVisible(el)) {
                 dispatchPointerClick(el);
-                try { HTMLElement.prototype.click.call(el); } catch {}
                 return t;
             }
         }
@@ -302,86 +317,6 @@ function mediaPanelOpen() {
     return false;
 }
 
-async function waitForUploadComplete(filename, maxWait = 30000) {
-    // Bot.py uses Playwright set_files() which auto-selects the file.
-    // The extension's DataTransfer injection uploads the file but does NOT auto-select it.
-    // So we must CLICK the file item in the media browser list to select it,
-    // which reveals the preview and makes "Add to Prompt" appear.
-    const nameNoExt = filename.replace(/\.[^.]+$/, '');
-    const end = Date.now() + maxWait;
-    // Snapshot of all img srcs before the file item appears (to detect new thumbnails)
-    const beforeSrcs = new Set([...document.querySelectorAll('img')].map(i => i.src).filter(Boolean));
-
-    while (Date.now() < end) {
-        // Done only when Add to Prompt is ENABLED — proves the selected file finished
-        // uploading (not the still-uploading 47% copy, which leaves the button greyed).
-        if (findAddToPromptBtn()) {
-            log('Upload complete — Add to Prompt enabled');
-            return;
-        }
-
-        // Strategy 1: find element whose OWN text = filename (leaf text node),
-        // then walk up to the nearest row-like container and click that.
-        let clicked = false;
-        for (const el of document.querySelectorAll('span, p, div')) {
-            if (!isVisible(el)) continue;
-            if (el.querySelectorAll('img, button, input, textarea').length > 0) continue;
-            const txt = (el.textContent || '').trim();
-            if (txt !== filename && txt !== nameNoExt) continue;
-            let target = el;
-            for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
-                const r = p.getBoundingClientRect();
-                const tag = p.tagName.toLowerCase();
-                const role = p.getAttribute('role') || '';
-                if (tag === 'li' || ['option', 'row', 'listitem', 'gridcell'].includes(role)) {
-                    target = p; break;
-                }
-                if (tag === 'div' && r.height >= 40 && r.height <= 100 && r.width >= 100 && r.width <= 500) {
-                    target = p;
-                }
-            }
-            target.scrollIntoView({ block: 'center' });
-            await sleep(100);
-            try { target.focus(); } catch {}
-            dispatchPointerClick(target);
-            try { HTMLElement.prototype.click.call(target); } catch {}
-            log(`Selected file (text match): "${txt}"`);
-            clicked = true;
-            await sleep(600);
-            break;
-        }
-
-        // Strategy 2: a new thumbnail img appeared after injection — click its row container.
-        if (!clicked) {
-            for (const img of document.querySelectorAll('img')) {
-                const src = img.src || '';
-                if (!src || beforeSrcs.has(src) || !isVisible(img)) continue;
-                const r = img.getBoundingClientRect();
-                if (r.width < 20 || r.width > 200 || r.height < 20) continue; // skip icons / full images
-                let target = img;
-                for (let p = img.parentElement; p && p !== document.body; p = p.parentElement) {
-                    const rp = p.getBoundingClientRect();
-                    if (rp.height >= 40 && rp.height <= 120 && rp.width >= 80 && rp.width <= 500) target = p;
-                    if (rp.width > 500) break;
-                }
-                target.scrollIntoView({ block: 'center' });
-                await sleep(100);
-                try { target.focus(); } catch {}
-                dispatchPointerClick(target);
-                try { HTMLElement.prototype.click.call(target); } catch {}
-                log('Selected file (thumbnail match)');
-                beforeSrcs.add(src);
-                clicked = true;
-                await sleep(600);
-                break;
-            }
-        }
-
-        await sleep(500);
-    }
-    log('WARNING: upload/select not confirmed after 30s — proceeding');
-}
-
 function findAddToPromptBtn() {
     // Return "Add to Prompt" ONLY when it is ENABLED. Flow greys it out (disabled)
     // while the selected media is still uploading; clicking the greyed button does
@@ -427,7 +362,6 @@ async function clickAddToPrompt() {
         try { el.focus(); } catch {}
         await sleep(100);
         dispatchPointerClick(el);
-        try { HTMLElement.prototype.click.call(el); } catch {}
         await sleep(1500);
 
         if (!addToPromptVisible()) {
@@ -488,7 +422,6 @@ async function openFramePicker() {
             || findVisible('[aria-label="Image ingredient"]');
         if (slot) {
             dispatchPointerClick(slot);
-            try { HTMLElement.prototype.click.call(slot); } catch {}
             await sleep(2200);
             if (mediaPanelOpen()) { log('Frame picker opened'); return true; }
         }
@@ -505,7 +438,6 @@ async function selectPickerFile(filename) {
         for (const el of document.querySelectorAll('[role="option"], [role="menuitem"], li, button')) {
             if (!isVisible(el) || !(el.textContent || '').includes(filename)) continue;
             dispatchPointerClick(el);
-            try { HTMLElement.prototype.click.call(el); } catch {}
             await sleep(800);
             log(`Selected in picker: ${filename}`);
             return true;
@@ -515,17 +447,19 @@ async function selectPickerFile(filename) {
     return false;
 }
 
-// True once THIS scene's image sits in the Start slot: the picker is closed, the slot
-// shows a thumbnail instead of the word "Start", and the attached chip carries this
-// filename. The name check matters from scene 2 on — the slot still holds the previous
-// scene's image, so "slot is not empty" alone would pass while nothing had changed.
-function frameAttached(filename) {
-    const body = document.body.innerText || '';
-    if (/Select a frame image|เลือกภาพเฟรม/i.test(body)) return false;
-    const slotEmpty = [...document.querySelectorAll('button, [role="button"]')]
+// True once an image sits in the Start slot: the picker is closed and the slot holds a
+// thumbnail — the "Image ingredient" chip — instead of the word "Start".
+//
+// This deliberately does NOT check the filename. The chip's name is not reliably part of
+// the page's rendered text, so matching it reported "not attached" for an image that was
+// plainly attached, and the scene looped re-uploading. That the slot holds THIS scene's
+// image is guaranteed upstream instead, by selectPickerFile() clicking the picker entry
+// by name and the caller treating a miss as fatal.
+function frameAttached() {
+    if (/Select a frame image|เลือกภาพเฟรม/i.test(document.body.innerText || '')) return false;
+    if (findVisible('[aria-label="Image ingredient"]')) return true;
+    return ![...document.querySelectorAll('button, [role="button"]')]
         .some(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()));
-    if (slotEmpty) return false;
-    return filename ? body.includes(filename) : true;
 }
 
 async function uploadSceneImage(imgPath, filename) {
@@ -546,16 +480,20 @@ async function uploadSceneImage(imgPath, filename) {
     }
     await jitter(1200, 1200); // settle after the picker opens
 
-    // Step 3: select the file we just uploaded, by name.
+    // Step 3: select the picker entry BY NAME. This is the step that guarantees the scene
+    // gets its own image: the picker preselects the most recent upload, which stops being
+    // the right one as soon as the project holds several scenes. A miss is fatal.
     log('Step 3: Selecting the uploaded file...');
-    if (!await selectPickerFile(filename)) await waitForUploadComplete(filename, 60000);
+    if (!await selectPickerFile(filename)) {
+        throw new Error(`SELECTOR: "${filename}" was not listed in the frame picker`);
+    }
 
     // Step 4: clicking the entry normally attaches it and closes the picker outright,
     // so "Add to prompt" is often already gone — click it only while it is still there.
     log('Step 4: Attaching to the Start frame...');
-    if (!frameAttached(filename) && addToPromptVisible()) await clickAddToPrompt();
-    for (let i = 0; i < 8 && !frameAttached(filename); i++) await sleep(1000);
-    if (!frameAttached(filename)) throw new Error('SELECTOR: scene image was not attached to the Start frame');
+    if (!frameAttached() && addToPromptVisible()) await clickAddToPrompt();
+    for (let i = 0; i < 8 && !frameAttached(); i++) await sleep(1000);
+    if (!frameAttached()) throw new Error('SELECTOR: scene image was not attached to the Start frame');
     log(`✓ Image attached to prompt: ${filename}`);
 }
 
@@ -642,7 +580,6 @@ async function clickGenerate() {
         try { btn.scrollIntoView({ block: 'center' }); } catch {}
         await sleep(150);
         dispatchPointerClick(btn);
-        try { HTMLElement.prototype.click.call(btn); } catch {}
         await jitter(1000, 1500);
         log('Generate: content-script arrow_forward click');
         return;
@@ -781,7 +718,6 @@ async function leaveClipViewer() {
     const back = findVisible('[aria-label="Back button to go to previous page"]');
     if (back) {
         dispatchPointerClick(back);
-        try { HTMLElement.prototype.click.call(back); } catch {}
     } else {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     }
@@ -798,7 +734,6 @@ async function downloadClipViaViewer(videoFilename) {
     const tile = newestClipTile();
     if (!tile) return false;
     dispatchPointerClick(tile);
-    try { HTMLElement.prototype.click.call(tile); } catch {}
     await sleep(4000);
 
     const dl = findVisible('[aria-label="Download media"]');
@@ -814,7 +749,6 @@ async function downloadClipViaViewer(videoFilename) {
         .catch(() => null);
 
     dispatchPointerClick(dl);
-    try { HTMLElement.prototype.click.call(dl); } catch {}
     await sleep(2000);
 
     let picked = null;
@@ -827,7 +761,6 @@ async function downloadClipViaViewer(videoFilename) {
             if (!t || /4K|GIF/i.test(t)) continue;       // never spend credits
             if (want.test(t)) {
                 dispatchPointerClick(el);
-                try { HTMLElement.prototype.click.call(el); } catch {}
                 picked = t.slice(0, 40);
                 break outer;
             }

@@ -249,6 +249,16 @@ The redesigned UI also broke the selectors, so these rules now hold in `flow.js`
 
 The rest of `uploadSceneImage()`: (2) wait for the `<n>%` tile progress to clear; (3) click the **Start** slot, which opens the **"Select a frame image"** picker — it does nothing while the project has no media, which is why it runs *after* the drop; (4) click the entry matching the filename, never trusting the picker's preselection since by scene 5 the project holds five images; (5) confirm the chip in the Start slot carries this filename, clicking **Add to prompt** only if the picker is still open.
 
+**Synthetic clicks must be shaped like a real mouse, and must fire exactly once.** This is the single most important rule for the current Flow UI, and it cost two rounds of "fixed" that were not. Flow's controls handle `pointerdown`/`pointerup` and check `button`, `buttons` and `isPrimary`; a bare `el.click()`, or a `PointerEvent` missing those fields, is **ignored completely**. The old `dispatchPointerClick()` omitted them, so the Start slot never opened the picker — the image uploaded, nothing else happened, and the scene looped re-uploading forever.
+
+`dispatchPointerClick()` now sends the full sequence (`pointerover/enter → mouseover/enter → pointermove/mousemove → pointerdown/mousedown → pointerup/mouseup → click`) with `button: 0`, `buttons: 1` while held and `0` after, `detail: 1`, `pointerId: 1`, `pointerType: 'mouse'`, `isPrimary: true`, `composed: true` and a plausible `pressure`. Every synthetic click in `flow.js` goes through it.
+
+And **never follow it with `HTMLElement.prototype.click.call(el)`.** That belt-and-braces line sat after 15 of these calls: harmless while the dispatch did nothing, but now a *second* activation that toggles pickers and menus straight back shut. Opening the frame picker and immediately closing it looks exactly like "the picker never opened".
+
+Both properties are verified against live Flow with no trusted clicks anywhere: the picker opens, the entry selects, the frame attaches, and `configureVideoSettings()` reaches `Video → Frames → 9:16 → x1 → Veo 3.1 - Lite [Lower Priority]`.
+
+**`frameAttached()` must not match on the filename.** The chip's name is not reliably part of `document.body.innerText`, so a name check reported "not attached" for an image that plainly was, and the scene looped. Attachment is: picker closed **and** an `[aria-label="Image ingredient"]` chip present (or, on the older layout, the slot no longer reading "Start"). That the slot holds *this* scene's image is guaranteed upstream instead — `selectPickerFile()` clicks the entry **by name** and a miss is fatal, so it can never quietly attach the previous scene's frame.
+
 **There is deliberately no fallback when the frame picker does not open.** The old `openMediaPanel()` / `findComposePlusButton()` pair has been deleted, not just guarded. In Frames mode Flow has no "+" media button at all (`[aria-label="Add ingredients to the prompt box"]` exists only in Ingredients mode), so a "left-most button on the compose row" search could only ever hit some other control — and it was hitting **Agent**, at coordinates left=353 against Start's left=359, which derailed the whole run. A miss now throws `SELECTOR:` and stops the scene loudly. Never reintroduce a fallback that clicks an unnamed compose-row button.
 
 **Both new background messages must stay in the exclusion guard.** The catch-all `onMessage` listener answers `{ok:true}` to any action not listed there, which would pre-empt `dropFlowFrame` and `expectClipDownload` and hand flow.js a fake success. Any future dedicated listener needs the same entry.
@@ -260,7 +270,9 @@ The rest of `uploadSceneImage()`: (2) wait for the `<n>%` tile progress to clear
 
 **Verified so far:** the injection/URL fix and the whole selector chain up to and including download were proven end-to-end through the terminal twin (`phases/video_phase.py`), which drives the same UI and now generates and saves a clip successfully. The MAIN-world drop itself is proven too — the same JS, run in the page's own world, made Flow ingest the image.
 
-**What cannot be verified from here:** the extension's own end-to-end run. Chrome 151 no longer honours `--load-extension` from the command line (no service worker, no background page), so the extension cannot be driven by Playwright on this machine — it has to be exercised by running a reel in the real browser. The two parts that have never executed are the `dropFlowFrame` message round-trip and the `expectClipDownload` rename.
+The click chain is verified too: the shipped `dispatchPointerClick`, `openFramePicker`, `selectPickerFile`, `frameAttached` and `configureVideoSettings` were run against live Flow **with no trusted clicks**, and all pass — including the scene-2 case where the slot still holds the previous frame.
+
+**What cannot be verified from here:** the extension's own end-to-end run. Chrome 151 no longer honours `--load-extension` from the command line (no service worker, no background page), so the extension cannot be driven by Playwright on this machine — it has to be exercised by running a reel in the real browser. What has never executed as a whole is the message plumbing: the `dropFlowFrame` round-trip and the `expectClipDownload` rename. Every DOM step either side of it has been run.
 
 ### Desktop notification when a reel finishes (2026-06-17)
 
