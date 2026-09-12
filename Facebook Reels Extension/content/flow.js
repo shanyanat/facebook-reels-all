@@ -68,12 +68,6 @@ async function isStopped(projectId) {
     } catch { return false; }
 }
 
-async function fetchFromServer(relPath) {
-    const res = await fetch(`${API}/file/${relPath}`);
-    if (!res.ok) throw new Error(`Server file not found: ${relPath} (${res.status})`);
-    return res.blob();
-}
-
 // ── Flow UI helpers ───────────────────────────────────────────────────────────
 
 async function clickNewProject() {
@@ -308,83 +302,6 @@ function mediaPanelOpen() {
     return false;
 }
 
-// The "+" / add-media button lives INSIDE the compose bar. We never page-wide search
-// for "+" (there are many on the page) — we anchor to the compose textbox, walk up to
-// its row container, and take the LEFT-most visible button. Correctness is guaranteed
-// not by this heuristic but by openMediaPanel() verifying the panel actually opened.
-function findComposePlusButton() {
-    // The current UI labels the button outright — take that whenever it is present.
-    const labelled = findVisible('[aria-label="Add ingredients to the prompt box"]');
-    if (labelled) return labelled;
-
-    const box = findVisible('textarea') || findVisible('[contenteditable="true"]') || findVisible('[role="textbox"]');
-    if (!box) return null;
-    let container = box.parentElement || box;
-    for (let p = box.parentElement; p && p !== document.body; p = p.parentElement) {
-        if ([...p.querySelectorAll('button, [role="button"]')].some(isVisible)) container = p;
-        if (p.getBoundingClientRect().width > window.innerWidth * 0.9) break;  // stop before whole page
-    }
-    // Keep only buttons sitting on the compose row itself. Without this the walk can
-    // reach an ancestor that also holds the top nav, making the left-most button "Home"
-    // — clicking that navigates out of the project instead of opening media.
-    const boxRect = box.getBoundingClientRect();
-    const boxMid  = boxRect.top + boxRect.height / 2;
-    const btns = [...container.querySelectorAll('button, [role="button"]')].filter(el => {
-        if (!isVisible(el)) return false;
-        const r = el.getBoundingClientRect();
-        return Math.abs(r.top + r.height / 2 - boxMid) < 160;
-    });
-    if (!btns.length) return null;
-    btns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-    return btns[0];   // left-most button in the compose row = the "+" / add-media
-}
-
-// Open the media browser, trying each known entry point and VERIFYING the panel opened
-// after each click — so a wrong guess self-corrects to the next strategy instead of
-// silently proceeding. Order: classic "Start/เริ่ม" slot (older machines) → compose
-// "+" (new Agent UI) → spatial fallback. Returns true once the panel is confirmed open,
-// which makes the same code work on every device regardless of which layout it shows.
-async function openMediaPanel() {
-    const tryClick = async (el, label) => {
-        if (!isVisible(el)) return false;
-        try { el.scrollIntoView({ block: 'center' }); } catch {}
-        await sleep(200);
-        dispatchPointerClick(el);
-        try { HTMLElement.prototype.click.call(el); } catch {}
-        await sleep(1500);
-        if (mediaPanelOpen()) { log(`Media panel opened via ${label}`); return true; }
-        return false;
-    };
-    for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) await sleep(1000);
-        if (mediaPanelOpen()) return true;   // already open
-
-        // 1) classic Start/เริ่ม slot (backup machines that still show it)
-        const startBtn = [...document.querySelectorAll('button, [role="button"], div[class], span[class]')]
-            .find(el => isVisible(el) && ['เริ่ม', 'Start', 'เริ่มต้น'].includes((el.textContent || '').trim()));
-        if (startBtn && await tryClick(startBtn, 'Start slot')) return true;
-
-        // 2) compose-bar "+" (new Agent layout)
-        if (await tryClick(findComposePlusButton(), 'compose "+"')) return true;
-
-        // 3) spatial fallback: element just left of the swap_horiz button
-        const swapBtn = [...document.querySelectorAll('button')]
-            .find(b => (b.textContent || '').includes('swap_horiz'));
-        if (swapBtn) {
-            const sr = swapBtn.getBoundingClientRect();
-            for (const xOff of [100, 70, 140, 50]) {
-                const x = sr.left - xOff;
-                if (x < 50) continue;
-                const el = document.elementFromPoint(x, sr.top + sr.height / 2);
-                if (!el || el === swapBtn || el === document.body) continue;
-                if (await tryClick(el, `spatial offset ${xOff}`)) return true;
-            }
-        }
-    }
-    log('WARNING: media browser panel did not open (Start / "+" / spatial all failed)');
-    return false;
-}
-
 async function waitForUploadComplete(filename, maxWait = 30000) {
     // Bot.py uses Playwright set_files() which auto-selects the file.
     // The extension's DataTransfer injection uploads the file but does NOT auto-select it.
@@ -523,23 +440,25 @@ async function clickAddToPrompt() {
     return false;
 }
 
-// Drop the file straight onto the compose bar's Start slot. Flow's own drop handler
-// ingests it into the project's media library. This replaces the old "open the media
-// browser → click Upload media → intercept the file input" dance: that browser no
-// longer exists, and Flow now creates its file input only for the duration of its own
-// click handler, so a content script (isolated world) can never capture it.
-async function dropFileIntoFlow(file) {
-    const target = [...document.querySelectorAll('button, [role="button"]')]
-        .find(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()))
-        || document.body;
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    const r = target.getBoundingClientRect();
-    const opts = { bubbles: true, cancelable: true, dataTransfer: dt,
-                   clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
-    for (const type of ['dragenter', 'dragover', 'drop'])
-        target.dispatchEvent(new DragEvent(type, opts));
-    log(`Dropped ${file.name} onto "${(target.textContent || 'page').trim().slice(0, 12)}"`);
+// Drop the scene image onto the compose bar's Start slot, so Flow ingests it into the
+// project's media library. This replaces the old "open the media browser → click Upload
+// media → intercept the file input" dance: that browser no longer exists, and Flow now
+// creates its file input only for the duration of its own click handler.
+//
+// The drop itself must happen in the page's MAIN world. A DragEvent + DataTransfer built
+// here, in the content script's isolated world, does not reach Flow's drop handler — the
+// upload silently does nothing, and the old code then fell through to a "+" search that
+// clicked the Agent button and derailed the run. background.js does the work; the same
+// wall and the same remedy as injectFileUpload on ChatGPT.
+async function dropSceneImage(imgPath, filename) {
+    const resp = await chrome.runtime
+        .sendMessage({ action: 'dropFlowFrame', path: imgPath, filename })
+        .catch(e => ({ ok: false, error: e.message }));
+    if (!resp || !resp.ok) {
+        throw new Error(`SELECTOR: could not drop ${filename} into Flow `
+                      + `(${resp && (resp.error || resp.result) || 'no response'})`);
+    }
+    log(`Dropped ${filename} into Flow — ${resp.result}`);
 }
 
 // Flow shows "<n>%" on the tile while a dropped file uploads. Let that clear before
@@ -609,19 +528,21 @@ function frameAttached(filename) {
     return filename ? body.includes(filename) : true;
 }
 
-async function uploadSceneImage(blob, filename) {
+async function uploadSceneImage(imgPath, filename) {
     log(`Uploading: ${filename}...`);
-    const file = new File([blob], filename, { type: 'image/png' });
 
     // Step 1: drop the file — Flow uploads it into the project's media library.
     log('Step 1: Dropping file into Flow...');
-    await dropFileIntoFlow(file);
+    await dropSceneImage(imgPath, filename);
     await waitForUploadFinished();
 
-    // Step 2: open the frame picker (Start slot); fall back to the old media browser.
+    // Step 2: open the frame picker by clicking the Start slot. There is deliberately no
+    // fallback here: in Frames mode Flow has no "+" media button at all, so the old
+    // compose-row search could only ever hit some other control — it was landing on
+    // Agent. A miss must stop the scene loudly instead.
     log('Step 2: Opening frame picker...');
-    if (!await openFramePicker() && !await openMediaPanel()) {
-        throw new Error('SELECTOR: frame picker did not open (Start slot / "+" not found)');
+    if (!await openFramePicker()) {
+        throw new Error('SELECTOR: frame picker did not open (Start slot not found)');
     }
     await jitter(1200, 1200); // settle after the picker opens
 
@@ -1160,9 +1081,7 @@ async function runVideos(project) {
 
             try {
                 const imgPath = `pages/${page}/working/${pid}-scene-${nn}.png`;
-                const imgBlob = await fetchFromServer(imgPath);
-
-                await uploadSceneImage(imgBlob, `${pid}-scene-${nn}.png`);
+                await uploadSceneImage(imgPath, `${pid}-scene-${nn}.png`);
                 await jitter(4000, 3500); // 4–7.5s: let compose bar settle after panel closes
 
                 const videoPrompt = cutAtEndMarker(scene.video_prompt.trim(), 'VIDEO')

@@ -312,6 +312,79 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     _finishClipRename(true);
 });
 
+// ── dropFlowFrame: drop a scene image onto Flow's Start slot, from the MAIN world ──
+// Content scripts run in an isolated world, and a DragEvent + DataTransfer built there
+// does not reach Google Flow's own drop handler — the upload silently does nothing.
+// This is the same wall injectFileUpload hit for ChatGPT, and the same remedy: fetch the
+// PNG from monitor.py here, hand the bytes to the page's own world, and build the File
+// and dispatch the drop there. Flow then ingests it into the project's media library.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action !== 'dropFlowFrame') return false;
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ ok: false, error: 'no tabId' }); return true; }
+
+    (async () => {
+        try {
+            const safePath = msg.path.replace(/\\/g, '/');
+            const response = await fetch('http://localhost:7788/file/' + encodeURI(safePath));
+            if (!response.ok) {
+                sendResponse({ ok: false, error: `fetch ${response.status} for ${msg.filename}` });
+                return;
+            }
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            const CHUNK = 8192;
+            let s = '';
+            for (let i = 0; i < bytes.length; i += CHUNK) {
+                s += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+            }
+            const base64 = btoa(s);
+
+            const results = await chrome.scripting.executeScript({
+                target: { tabId },
+                world: 'MAIN',
+                func: (b64, filename) => {
+                    try {
+                        const bin = atob(b64);
+                        const buf = new Uint8Array(bin.length);
+                        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+                        const file = new File([buf], filename, { type: 'image/png' });
+
+                        const vis = el => {
+                            const r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0 &&
+                                   getComputedStyle(el).visibility !== 'hidden';
+                        };
+                        const target = [...document.querySelectorAll('button, [role="button"]')]
+                            .find(el => vis(el) &&
+                                  ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()))
+                            || document.body;
+
+                        const dt = new DataTransfer();
+                        dt.items.add(file);
+                        const r = target.getBoundingClientRect();
+                        const opts = {
+                            bubbles: true, cancelable: true, dataTransfer: dt,
+                            clientX: r.left + r.width / 2, clientY: r.top + r.height / 2
+                        };
+                        for (const type of ['dragenter', 'dragover', 'drop']) {
+                            target.dispatchEvent(new DragEvent(type, opts));
+                        }
+                        return 'dropped on ' + ((target.textContent || 'page').trim().slice(0, 12));
+                    } catch (e) {
+                        return 'error:' + (e && e.message);
+                    }
+                },
+                args: [base64, msg.filename]
+            });
+            const result = (results && results[0] && results[0].result) || 'no-result';
+            sendResponse({ ok: result.startsWith('dropped'), result });
+        } catch (e) {
+            sendResponse({ ok: false, error: String(e.message || e) });
+        }
+    })();
+    return true;   // async
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action !== 'expectClipDownload') return false;
     if (_clipRename) { sendResponse({ ok: false, error: 'a clip rename is already armed' }); return true; }
@@ -703,7 +776,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'fillSlate' || msg.action === 'clickGenerateSlate' ||
         msg.action === 'injectFileUpload' || msg.action === 'pressEnterCompose' ||
-        msg.action === 'saveGeminiImage') return false; // handled by dedicated listeners above
+        msg.action === 'saveGeminiImage' || msg.action === 'dropFlowFrame' ||
+        msg.action === 'expectClipDownload') return false; // handled by dedicated listeners above
     (async () => {
         try {
             await handleMessage(msg, sender);
