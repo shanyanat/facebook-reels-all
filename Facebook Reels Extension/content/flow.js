@@ -22,6 +22,19 @@ function dispatchPointerClick(el) {
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
+
+    // Dispatch on the TOPMOST element at that point, not on `el` itself. Playwright's
+    // .click() — what the working terminal twin uses — presses a screen coordinate, so the
+    // event originates at the innermost child under the cursor and bubbles up through every
+    // ancestor. Dispatching straight on a container reaches handlers on that container and
+    // ABOVE it only: React resolves a synthetic click by walking the fiber path UPWARD from
+    // the event target, so a handler on an inner child never runs. A frame-picker entry is
+    // a wrapper around a clickable tile, which is exactly that shape — the click "worked",
+    // nothing was selected, and "Add to prompt" stayed greyed for ever.
+    // Events still bubble to `el`, so this is strictly more faithful, never less.
+    const hit = document.elementFromPoint(cx, cy);
+    const target = (hit && (hit === el || el.contains(hit))) ? hit : el;
+
     const down = {
         bubbles: true, cancelable: true, composed: true, view: window,
         clientX: cx, clientY: cy, screenX: cx, screenY: cy,
@@ -30,17 +43,42 @@ function dispatchPointerClick(el) {
         width: 1, height: 1, pressure: 0.5,
     };
     const up = { ...down, buttons: 0, pressure: 0 };   // no button held any more
-    el.dispatchEvent(new PointerEvent('pointerover', down));
-    el.dispatchEvent(new PointerEvent('pointerenter', down));
-    el.dispatchEvent(new MouseEvent('mouseover', down));
-    el.dispatchEvent(new MouseEvent('mouseenter', down));
-    el.dispatchEvent(new PointerEvent('pointermove', up));
-    el.dispatchEvent(new MouseEvent('mousemove', up));
-    el.dispatchEvent(new PointerEvent('pointerdown', down));
-    el.dispatchEvent(new MouseEvent('mousedown', down));
-    el.dispatchEvent(new PointerEvent('pointerup', up));
-    el.dispatchEvent(new MouseEvent('mouseup', up));
-    el.dispatchEvent(new MouseEvent('click', up));
+    target.dispatchEvent(new PointerEvent('pointerover', down));
+    target.dispatchEvent(new PointerEvent('pointerenter', down));
+    target.dispatchEvent(new MouseEvent('mouseover', down));
+    target.dispatchEvent(new MouseEvent('mouseenter', down));
+    target.dispatchEvent(new PointerEvent('pointermove', up));
+    target.dispatchEvent(new MouseEvent('mousemove', up));
+    target.dispatchEvent(new PointerEvent('pointerdown', down));
+    target.dispatchEvent(new MouseEvent('mousedown', down));
+    target.dispatchEvent(new PointerEvent('pointerup', up));
+    target.dispatchEvent(new MouseEvent('mouseup', up));
+    target.dispatchEvent(new MouseEvent('click', up));
+}
+
+// Hover only — pointer/mouse move events, and deliberately NO pointerdown/up/click.
+// Flow reveals a clip tile's ⋮ button on hover, and that menu is the only correct way to
+// download: CLICKING a tile opens Flow's full-screen viewer instead, which is the wrong
+// route and leaves the page in a state the rest of the run cannot drive.
+function dispatchHover(el) {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(cx, cy);
+    const target = (hit && (hit === el || el.contains(hit))) ? hit : el;
+    const opts = {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+        button: 0, buttons: 0, detail: 0,
+        pointerId: 1, pointerType: 'mouse', isPrimary: true,
+        width: 1, height: 1, pressure: 0,
+    };
+    target.dispatchEvent(new PointerEvent('pointerover', opts));
+    target.dispatchEvent(new PointerEvent('pointerenter', opts));
+    target.dispatchEvent(new MouseEvent('mouseover', opts));
+    target.dispatchEvent(new MouseEvent('mouseenter', opts));
+    target.dispatchEvent(new PointerEvent('pointermove', opts));
+    target.dispatchEvent(new MouseEvent('mousemove', opts));
 }
 
 function isVisible(el) {
@@ -53,6 +91,64 @@ function findVisible(selector, root = document) {
     for (const el of root.querySelectorAll(selector))
         if (isVisible(el)) return el;
     return null;
+}
+
+// ── The Start frame slot: match its ACCESSIBLE NAME, never raw textContent ─────
+// The working terminal twin finds this slot with Playwright's
+// get_by_role("button", name="Start", exact=True), which matches the element's
+// *accessible name* — and that computation drops aria-hidden icon spans. `el.textContent`
+// keeps them, and Google's Material buttons glue the icon ligature onto the label
+// ("image" + "Start" → textContent "imageStart"), exactly as documented for
+// "videocamVideo" / "addNew project". So `['Start'].includes(textContent.trim())` misses
+// the very button Playwright matches: the drop fell back to document.body, the picker was
+// never opened, and the scene looped re-uploading the same image. accName() reproduces the
+// accessible name; isStartSlot() also accepts the ligature shape, anchored at the END so
+// "Start over" can never match.
+const SLOT_NAMES = ['Start', 'เริ่ม', 'เริ่มต้น'];
+
+function accNameText(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    if (node.getAttribute('aria-hidden') === 'true') return '';
+    if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE') return '';
+    let s = '';
+    for (const child of node.childNodes) s += accNameText(child);
+    return s;
+}
+
+function accName(el) {
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria;
+    return accNameText(el).replace(/\s+/g, ' ').trim();
+}
+
+function isStartSlot(el) {
+    if (SLOT_NAMES.includes(accName(el))) return true;
+    const raw = (el.textContent || '').trim();
+    return SLOT_NAMES.some(n => raw.endsWith(n) && raw.length <= n.length + 24);
+}
+
+function findStartSlot() {
+    for (const el of document.querySelectorAll('button, [role="button"]'))
+        if (isVisible(el) && isStartSlot(el)) return el;
+    return null;
+}
+
+// Dump what the compose row actually holds when a lookup misses, so ONE failing run
+// names the real label shape instead of another round of guessing at it.
+function dumpComposeButtons(what) {
+    const vh = window.innerHeight;
+    log(`DIAG: ${what} — visible buttons in the lower viewport:`);
+    let n = 0;
+    for (const el of document.querySelectorAll('button, [role="button"]')) {
+        if (!isVisible(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.top < vh * 0.5) continue;
+        if (++n > 14) break;
+        log(`  txt="${(el.textContent || '').trim().slice(0, 28)}" acc="${accName(el).slice(0, 24)}"`
+          + ` aria="${(el.getAttribute('aria-label') || '').slice(0, 24)}" @${Math.round(r.left)},${Math.round(r.top)}`);
+    }
+    if (!n) log('  (none)');
 }
 
 async function waitFor(fn, timeout = 30000, interval = 500) {
@@ -341,6 +437,18 @@ function addToPromptVisible() {
     return false;
 }
 
+// Why a button that looks clickable might not be. isEnabled() only knows `disabled` and
+// `aria-disabled`; Flow may instead grey a button with a CSS class, and then
+// findAddToPromptBtn() hands back a button whose clicks are inert. One dump says which.
+function describeButton(el) {
+    let cs = {};
+    try { cs = getComputedStyle(el); } catch {}
+    return `tag=${el.tagName} disabled=${!!el.disabled}`
+         + ` aria-disabled=${el.getAttribute('aria-disabled')}`
+         + ` class="${String(el.className || '').slice(0, 60)}"`
+         + ` pointer-events=${cs.pointerEvents} opacity=${cs.opacity}`;
+}
+
 async function clickAddToPrompt() {
     // Step 1: wait (up to ~60s) for the button to become ENABLED — i.e. the selected
     // media finished uploading. This is what stops the bot clicking the greyed button.
@@ -351,6 +459,15 @@ async function clickAddToPrompt() {
     }
     if (!el) {
         log('WARNING: Add to Prompt never became enabled — upload not ready in time');
+        // Name the disabled button, if there is one: its state says whether Flow is still
+        // processing the selected copy or whether nothing was selected at all.
+        for (const b of document.querySelectorAll('button, [role="button"]')) {
+            const t = (b.textContent || '').trim();
+            if (isVisible(b) && ['เพิ่มไปยังพรอมต์', 'Add to prompt'].some(k => t.includes(k))) {
+                log(`DIAG: Add-to-prompt button is present but not enabled — ${describeButton(b)}`);
+                break;
+            }
+        }
         return false;
     }
 
@@ -368,6 +485,9 @@ async function clickAddToPrompt() {
             log(`Clicked: เพิ่มไปยังพรอมต์ (confirmed closed, attempt ${attempt + 1})`);
             return true;
         }
+        // Three dead clicks on a button we believe is enabled means "enabled" is wrong,
+        // or the click is landing somewhere inert. Say so once, with the evidence.
+        if (attempt === 2) log(`DIAG: 3 clicks, panel still open — ${describeButton(el)}`);
         log(`Attempt ${attempt + 1}: panel still open — retrying`);
     }
     log('WARNING: เพิ่มไปยังพรอมต์ — could not close panel after 10 attempts');
@@ -393,6 +513,52 @@ async function dropSceneImage(imgPath, filename) {
                       + `(${resp && (resp.error || resp.result) || 'no response'})`);
     }
     log(`Dropped ${filename} into Flow — ${resp.result}`);
+    return resp.result || '';
+}
+
+// Which file this page's Start slot was last confirmed to hold. Kept in chrome.storage so
+// it survives reloadForRetry(), which is the whole point: a retry that finds its own image
+// already attached must NOT drop it again. Re-dropping every attempt is what filled the
+// project with duplicate copies of one scene and made the picker ambiguous.
+async function getLastAttached(pid) {
+    const key = `flow_attached_${pid}`;
+    const r = await chrome.storage.local.get(key);
+    return r[key] || '';
+}
+
+async function rememberAttached(pid, filename) {
+    await chrome.storage.local.set({ [`flow_attached_${pid}`]: filename });
+}
+
+async function clearLastAttached(pid) {
+    await chrome.storage.local.remove(`flow_attached_${pid}`);
+}
+
+// Which scene files have already been uploaded into the CURRENT Flow project. All scenes
+// of a reel share one project, and a project survives reloadForRetry(), so a retry must
+// not upload the same PNG again: every extra copy shows up in the frame picker under the
+// same name, and a copy Flow is still processing keeps "Add to prompt" greyed — so each
+// re-upload made the next attempt MORE likely to fail, not less. Cleared when a fresh run
+// starts a brand-new project.
+async function getDroppedFiles(pid) {
+    const key = `flow_dropped_${pid}`;
+    const r = await chrome.storage.local.get(key);
+    return Array.isArray(r[key]) ? r[key] : [];
+}
+
+async function markDropped(pid, filename) {
+    const list = await getDroppedFiles(pid);
+    if (!list.includes(filename)) list.push(filename);
+    await chrome.storage.local.set({ [`flow_dropped_${pid}`]: list });
+}
+
+async function unmarkDropped(pid, filename) {
+    const list = (await getDroppedFiles(pid)).filter(f => f !== filename);
+    await chrome.storage.local.set({ [`flow_dropped_${pid}`]: list });
+}
+
+async function clearDroppedFiles(pid) {
+    await chrome.storage.local.remove(`flow_dropped_${pid}`);
 }
 
 // Flow shows "<n>%" on the tile while a dropped file uploads. Let that clear before
@@ -415,35 +581,133 @@ async function waitForUploadFinished(maxWait = 120000) {
 // word "Start" is gone and the slot is the "Image ingredient" chip. Clicking that chip
 // either reopens the picker or clears the slot back to "Start"; the loop copes with both.
 async function openFramePicker() {
+    let sawSlot = false;
     for (let attempt = 0; attempt < 5; attempt++) {
-        if (mediaPanelOpen()) return true;
-        const slot = [...document.querySelectorAll('button, [role="button"]')]
-            .find(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()))
-            || findVisible('[aria-label="Image ingredient"]');
+        if (mediaPanelOpen()) {
+            // mediaPanelOpen() also answers true for a stray Add-to-prompt / Upload-media
+            // button anywhere on the page, so "already open" on the very first check may
+            // mean the dialog was never opened at all. Say so — if the picker really is
+            // absent, selectPickerFile() finds no entries and reports exactly that.
+            if (attempt === 0) log('Frame picker reported already open (no slot click needed)');
+            return true;
+        }
+        const slot = findStartSlot() || findVisible('[aria-label="Image ingredient"]');
         if (slot) {
+            sawSlot = true;
             dispatchPointerClick(slot);
             await sleep(2200);
             if (mediaPanelOpen()) { log('Frame picker opened'); return true; }
         }
         await sleep(1200);
     }
+    dumpComposeButtons(sawSlot
+        ? 'clicked the Start slot but the picker never opened'
+        : 'no Start slot / Image ingredient chip found at all');
     return false;
+}
+
+// Dismiss the frame picker without choosing anything — used before re-uploading a file the
+// picker turned out not to hold.
+async function closeFramePicker() {
+    for (let attempt = 0; attempt < 3 && mediaPanelOpen(); attempt++) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await sleep(700);
+        if (!mediaPanelOpen()) break;
+        for (const el of document.querySelectorAll('button, [role="button"]')) {
+            if (!isVisible(el)) continue;
+            const name = accName(el);
+            if (['Close', 'Cancel', 'ยกเลิก', 'ปิด'].includes(name)) { dispatchPointerClick(el); break; }
+        }
+        await sleep(700);
+    }
+    return !mediaPanelOpen();
+}
+
+// Select this scene's file by name. The picker tends to preselect the most recent
+// upload, but by scene 5 the project holds five images — never rely on that.
+const PICKER_ENTRY_SEL = '[role="option"], [role="menuitem"], [role="listitem"], li, button';
+
+// A picker entry is a thumbnail tile, so the name can live in the tile's own text or in an
+// attribute (aria-label / title) or on the <img alt>. Searching all of them costs nothing
+// and cannot misfire: the match is still the full, unique filename.
+function entryCarriesName(el, filename) {
+    return (el.textContent || '').includes(filename) ||
+           (el.getAttribute('aria-label') || '').includes(filename) ||
+           (el.getAttribute('title') || '').includes(filename) ||
+           [...el.querySelectorAll('img')].some(i =>
+               (i.getAttribute('alt') || '').includes(filename) ||
+               (i.getAttribute('title') || '').includes(filename));
+}
+
+function findPickerEntries(filename) {
+    return [...document.querySelectorAll(PICKER_ENTRY_SEL)]
+        .filter(el => isVisible(el) && entryCarriesName(el, filename));
+}
+
+// What the page must show before a picker entry counts as SELECTED. Logging the click
+// itself as "Selected in picker" is what hid every failure below this step: the click
+// landed, nothing was selected, and "Add to prompt" then stayed greyed for ever.
+function pickerSelectionSignal(el) {
+    if (frameAttached()) return 'frame attached';
+    if (findAddToPromptBtn()) return 'Add-to-prompt enabled';
+    const marked = el.closest('[aria-selected="true"]') || el.querySelector('[aria-selected="true"]');
+    if (el.getAttribute('aria-selected') === 'true' || marked) return 'aria-selected';
+    return null;
+}
+
+function dumpPickerEntries(filename) {
+    log(`DIAG: no selectable entry for "${filename}". Visible picker entries:`);
+    let n = 0;
+    for (const el of document.querySelectorAll(PICKER_ENTRY_SEL)) {
+        if (!isVisible(el)) continue;
+        const txt = (el.textContent || '').trim();
+        const alt = [...el.querySelectorAll('img')].map(i => i.getAttribute('alt') || '').join('|');
+        if (!txt && !alt) continue;
+        if (++n > 12) break;
+        log(`  txt="${txt.slice(0, 40)}" aria="${(el.getAttribute('aria-label') || '').slice(0, 30)}"`
+          + ` alt="${alt.slice(0, 30)}"`);
+    }
+    if (!n) log('  (none — the picker may not actually be open)');
 }
 
 // Select this scene's file by name. The picker tends to preselect the most recent
 // upload, but by scene 5 the project holds five images — never rely on that.
 async function selectPickerFile(filename) {
-    const end = Date.now() + 60000;
+    // Wait for the entries to render.
+    let entries = [];
+    const end = Date.now() + 45000;
     while (Date.now() < end) {
-        for (const el of document.querySelectorAll('[role="option"], [role="menuitem"], li, button')) {
-            if (!isVisible(el) || !(el.textContent || '').includes(filename)) continue;
-            dispatchPointerClick(el);
-            await sleep(800);
-            log(`Selected in picker: ${filename}`);
-            return true;
-        }
+        entries = findPickerEntries(filename);
+        if (entries.length) break;
         await sleep(1000);
     }
+    if (!entries.length) { dumpPickerEntries(filename); return false; }
+    log(`Picker holds ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} named ${filename}`);
+
+    // Try several: a project can hold more than one copy of a scene (earlier retries used
+    // to re-upload every time), and a copy Flow is still processing leaves "Add to prompt"
+    // permanently greyed — documented in findAddToPromptBtn(). The next copy is usually
+    // fine, so a dead entry moves on instead of failing the whole scene.
+    for (let i = 0; i < 4; i++) {
+        const list = findPickerEntries(filename);
+        if (!list.length) break;
+        const el = list[i % list.length];
+        try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+        await sleep(300);
+        dispatchPointerClick(el);
+
+        for (let w = 0; w < 6; w++) {
+            const signal = pickerSelectionSignal(el);
+            if (signal) {
+                log(`Selected in picker: ${filename} (copy ${(i % list.length) + 1}/${list.length} — ${signal})`);
+                return true;
+            }
+            await sleep(800);
+        }
+        log(`Picker copy ${(i % list.length) + 1}: click produced no selection signal — trying another`);
+    }
+
+    dumpPickerEntries(filename);
     return false;
 }
 
@@ -458,17 +722,64 @@ async function selectPickerFile(filename) {
 function frameAttached() {
     if (/Select a frame image|เลือกภาพเฟรม/i.test(document.body.innerText || '')) return false;
     if (findVisible('[aria-label="Image ingredient"]')) return true;
-    return ![...document.querySelectorAll('button, [role="button"]')]
-        .some(el => isVisible(el) && ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()));
+    // No chip, so fall back to "the slot no longer offers an empty Start". This MUST use
+    // the accessible-name matcher: with the old raw-textContent test an icon-ligature label
+    // never matched, so an empty slot read as "attached" — a false pass in the other
+    // direction, which would have generated a video with no start frame at all.
+    return !findStartSlot();
 }
 
-async function uploadSceneImage(imgPath, filename) {
+async function uploadSceneImage(pid, imgPath, filename) {
     log(`Uploading: ${filename}...`);
 
-    // Step 1: drop the file — Flow uploads it into the project's media library.
-    log('Step 1: Dropping file into Flow...');
-    await dropSceneImage(imgPath, filename);
-    await waitForUploadFinished();
+    // Step 0: this scene's image may already be sitting in the Start slot — from a retry
+    // after reloadForRetry(), or because Flow restored the compose bar. Dropping it again
+    // achieves nothing except another copy in the library, and re-dropping on every
+    // attempt is precisely what looked like "the same image uploads over and over, and
+    // no video is ever made".
+    if (frameAttached() && (await getLastAttached(pid)) === filename) {
+        log(`✓ Start frame already holds ${filename} — skipping the upload`);
+        return;
+    }
+
+    // Step 1: drop the file — Flow uploads it into the project's media library — UNLESS
+    // this project already has it from an earlier attempt. Re-dropping every attempt is
+    // what the user sees as "it keeps uploading the same image", and it actively poisons
+    // the next attempt: each copy appears in the picker under the same name, and a copy
+    // Flow is still processing leaves "Add to prompt" greyed for ever. If the recorded
+    // upload turns out not to be in the picker, step 3 drops it once and retries.
+    const alreadyUploaded = (await getDroppedFiles(pid)).includes(filename);
+    let slotWasEmpty = false;
+    let dropResult = '';
+    if (alreadyUploaded) {
+        log(`Step 1: ${filename} is already in this Flow project — not uploading it again`);
+    } else {
+        // Note whether the Start slot is EMPTY first: that decides whether the drop can be
+        // trusted to have attached our image by itself (below).
+        log('Step 1: Dropping file into Flow...');
+        slotWasEmpty = !!findStartSlot();
+        dropResult = await dropSceneImage(imgPath, filename);
+        await markDropped(pid, filename);
+        await waitForUploadFinished();
+    }
+
+    // Step 1b: an empty slot that now holds an image was filled by this drop — the only
+    // file we dropped — so the picker has nothing left to do, and clicking the slot again
+    // would only risk clearing it. Scene 2 onward starts with the previous scene's frame
+    // still in the slot, so slotWasEmpty is false there and the picker route runs.
+    //
+    // The skip demands the POSITIVE signal — the chip itself — never frameAttached(),
+    // whose fallback is merely "no empty Start slot visible". A slot mid-upload can show
+    // a spinner with the word "Start" already gone and no chip yet, and that negative
+    // test would call it attached: the prompt would fill, Generate would fire, and Flow
+    // would return a text-only clip with no start frame that still counts as done. If
+    // the chip's aria-label ever changes this skip simply stops firing and every scene
+    // takes the picker route, which is the understood path.
+    if (slotWasEmpty && findVisible('[aria-label="Image ingredient"]')) {
+        await rememberAttached(pid, filename);
+        log(`✓ Drop attached ${filename} to the Start frame directly (${dropResult})`);
+        return;
+    }
 
     // Step 2: open the frame picker by clicking the Start slot. There is deliberately no
     // fallback here: in Frames mode Flow has no "+" media button at all, so the old
@@ -485,7 +796,25 @@ async function uploadSceneImage(imgPath, filename) {
     // the right one as soon as the project holds several scenes. A miss is fatal.
     log('Step 3: Selecting the uploaded file...');
     if (!await selectPickerFile(filename)) {
-        throw new Error(`SELECTOR: "${filename}" was not listed in the frame picker`);
+        // Skipping the upload (step 1) is only ever an optimisation — if the file this
+        // project was recorded as holding is not selectable after all, forget the record,
+        // upload it once, and try the picker again. Without this the skip could loop.
+        if (!alreadyUploaded) {
+            throw new Error(`SELECTOR: "${filename}" was not listed in the frame picker`);
+        }
+        log('Recorded upload is not selectable — uploading it once more');
+        await unmarkDropped(pid, filename);
+        await closeFramePicker();
+        await dropSceneImage(imgPath, filename);
+        await markDropped(pid, filename);
+        await waitForUploadFinished();
+        if (!await openFramePicker()) {
+            throw new Error('SELECTOR: frame picker did not reopen after re-upload');
+        }
+        await jitter(1200, 1200);
+        if (!await selectPickerFile(filename)) {
+            throw new Error(`SELECTOR: "${filename}" was not listed in the frame picker`);
+        }
     }
 
     // Step 4: clicking the entry normally attaches it and closes the picker outright,
@@ -493,55 +822,134 @@ async function uploadSceneImage(imgPath, filename) {
     log('Step 4: Attaching to the Start frame...');
     if (!frameAttached() && addToPromptVisible()) await clickAddToPrompt();
     for (let i = 0; i < 8 && !frameAttached(); i++) await sleep(1000);
-    if (!frameAttached()) throw new Error('SELECTOR: scene image was not attached to the Start frame');
+    if (!frameAttached()) {
+        dumpComposeButtons('picker entry was selected but no frame attached');
+        throw new Error('SELECTOR: scene image was not attached to the Start frame');
+    }
+    await rememberAttached(pid, filename);
     log(`✓ Image attached to prompt: ${filename}`);
+}
+
+// The compose bar's text input, whatever Flow builds it from this month. waitForCompose()
+// already proves one of these exists — and the old fallback list held only textarea/input,
+// so a contenteditable or role=textbox compose bar had no working path at all. The terminal
+// twin, which works on this UI, tries exactly this list.
+const PROMPT_SELECTORS = ['[data-slate-editor="true"]', '[contenteditable="true"]',
+                          '[role="textbox"]', 'textarea', 'input[type="text"]'];
+
+function findPromptEditors() {
+    const vh = window.innerHeight;
+    const seen = new Set();
+    const out = [];
+    for (const sel of PROMPT_SELECTORS) {
+        for (const el of document.querySelectorAll(sel)) {
+            if (seen.has(el) || !isVisible(el)) continue;
+            if (el.getBoundingClientRect().top < vh * 0.35) continue;   // the compose bar sits low
+            seen.add(el);
+            out.push(el);
+        }
+    }
+    out.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+    return out;   // lowest first — that is the compose bar
+}
+
+// An editor's REAL text. Slate renders its placeholder ("What do you want to create?")
+// in a child span INSIDE the editable, so a plain textContent read reports an empty box as
+// filled — which is exactly how a silent failure passed verification.
+function editorText(el) {
+    if (!el) return '';
+    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') return (el.value || '').trim();
+    try {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('[data-slate-placeholder], [data-placeholder]')
+             .forEach(ph => ph.remove());
+        return (clone.textContent || '').trim();
+    } catch { return (el.textContent || '').trim(); }
+}
+
+// Did OUR prompt land? Never "is there any text": that question is what let an untouched
+// compose bar report success. Whitespace may be renormalised by the editor, so both sides
+// are collapsed and compared on length AND on a leading slice.
+function promptFilled(text) {
+    const norm = s => s.replace(/\s+/g, ' ').trim();
+    const want = norm(text);
+    const need = Math.max(20, Math.floor(want.length * 0.5));
+    const head = want.slice(0, 20);
+    return findPromptEditors().some(el => {
+        const got = norm(editorText(el));
+        return got.length >= need && got.includes(head);
+    });
+}
+
+function dumpPromptEditors() {
+    log('DIAG: prompt never landed. Candidate compose inputs:');
+    let n = 0;
+    for (const el of findPromptEditors()) {
+        if (++n > 6) break;
+        const r = el.getBoundingClientRect();
+        log(`  tag=${el.tagName} role="${el.getAttribute('role') || ''}"`
+          + ` editable=${el.getAttribute('contenteditable')}`
+          + ` slate=${el.getAttribute('data-slate-editor')}`
+          + ` chars=${editorText(el).length} @${Math.round(r.left)},${Math.round(r.top)}`);
+    }
+    if (!n) log('  (none found in the lower viewport)');
 }
 
 async function fillVideoPrompt(text) {
     // Google Flow uses Slate.js. ANY browser-level selection change on the editor
-    // (execCommand, getSelection().addRange, etc.) fires selectionchange →
-    // Slate calls toSlateRange() on container nodes → crashes.
-    //
-    // The only crash-free path: call editor.insertText() directly via Slate's own
-    // API. Content scripts run in an isolated world with no React/Slate access, so
-    // we ask background.js to use chrome.scripting.executeScript(world:'MAIN').
+    // (execCommand selectAll, getSelection().addRange, etc.) fires selectionchange →
+    // Slate calls toSlateRange() on container nodes → crashes. The crash-free path is to
+    // call editor.insertText() through Slate's own API, and content scripts have no access
+    // to React/Slate internals, so background.js runs it with world:'MAIN'.
     const resp = await chrome.runtime.sendMessage({ action: 'fillSlate', text }).catch(() => null);
-
     await sleep(300);
-    const slateEl = document.querySelector('[data-slate-editor="true"]');
-    const actual  = (slateEl?.textContent || '').trim();
 
-    if (actual.length > 0) {
+    if (promptFilled(text)) {
         log(`Prompt filled (${text.length} chars via Slate main-world, bg=${resp?.result})`);
         return;
     }
+    log(resp && !resp.ok
+        ? `Slate main-world failed: ${resp.result || resp.error} — trying the compose input directly`
+        : `Slate main-world returned ${resp?.result} but the prompt is NOT in the box — trying the compose input directly`);
 
-    if (resp && !resp.ok) {
-        log(`Slate main-world failed: ${resp.result || resp.error}`);
-    }
+    for (const el of findPromptEditors()) {
+        try { el.scrollIntoView({ block: 'nearest' }); } catch {}
+        dispatchPointerClick(el);
+        await sleep(200);
+        try { el.focus(); } catch {}
+        await sleep(200);
 
-    // Fallback for plain textarea / input (non-Slate editors)
-    const vh = window.innerHeight;
-    for (const sel of ['textarea', 'input[type="text"]']) {
-        const els = [...document.querySelectorAll(sel)].filter(el => {
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.top > vh * 0.4;
-        });
-        if (!els.length) continue;
-        const el = els.sort((a, b) =>
-            b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
-        el.click(); await sleep(200); el.focus(); await sleep(200);
-        const proto  = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(proto, 'value');
-        if (setter?.set) setter.set.call(el, text); else el.value = text;
-        el.dispatchEvent(new Event('input',  { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        if ((el.value || '').trim().length > 0) {
-            log(`Prompt filled (${text.length} chars via "${sel}")`);
+        if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+            const proto  = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype
+                                                     : HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (setter?.set) setter.set.call(el, text); else el.value = text;
+            el.dispatchEvent(new Event('input',  { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+            // Contenteditable (Slate and friends). insertText is the browser's own editing
+            // command, so the input events it fires are trusted and editors honour them.
+            // focus() alone puts the caret in — deliberately NO selectAll/addRange, which
+            // is the documented Slate crash. Last resort, and never fatal on its own.
+            try { document.execCommand('insertText', false, text); } catch (e) {
+                log(`insertText failed on ${el.tagName}: ${e.message}`);
+            }
+        }
+
+        await sleep(400);
+        if (promptFilled(text)) {
+            log(`Prompt filled (${text.length} chars via ${el.tagName}`
+              + `${el.getAttribute('contenteditable') === 'true' ? '[contenteditable]' : ''})`);
             return;
         }
     }
-    log('WARNING: Prompt input not found — compose bar may not be ready');
+
+    // Never continue to Generate on an empty box: Flow would either refuse (and the run
+    // would die later as a confusing "Generate button not found") or generate a text-less
+    // clip that still counts as done. SELECTOR: puts this in the systemic bucket, so it
+    // retries after a reload and stops loudly instead of burning the scene's fail budget.
+    dumpPromptEditors();
+    throw new Error('SELECTOR: could not type the video prompt into the compose bar');
 }
 
 // The Generate/send button carries the "arrow_forward" Material icon (its visually-
@@ -585,6 +993,16 @@ async function clickGenerate() {
         return;
     }
 
+    // Not found usually means "found but disabled" — Flow greys the arrow until the
+    // compose bar has both a frame and a prompt. Name what is actually there.
+    const vh = window.innerHeight;
+    log('DIAG: Generate not found. Lower-viewport buttons and their state:');
+    let n = 0;
+    for (const b of document.querySelectorAll('button, [role="button"]')) {
+        if (!isVisible(b) || b.getBoundingClientRect().top < vh * 0.3) continue;
+        if (++n > 10) break;
+        log(`  txt="${(b.textContent || '').trim().slice(0, 24)}" ${describeButton(b)}`);
+    }
     throw new Error('SELECTOR: Generate (arrow_forward) button not found');
 }
 
@@ -598,12 +1016,70 @@ function countVideoClips() {
         document.querySelectorAll('video').length);
 }
 
-// Newest generated-clip tile (the grid is newest-first), or null.
+// Newest generated-clip tile (the grid is newest-first), or null. Top row first, then
+// left-most within that row — sorting on `left` alone picked a second-row tile whenever
+// the grid wrapped.
 function newestClipTile() {
     const tiles = [...document.querySelectorAll('img[alt="Generated video thumbnail"]')].filter(isVisible);
     if (!tiles.length) return null;
-    tiles.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-    return tiles[0];
+    const minTop = Math.min(...tiles.map(t => t.getBoundingClientRect().top));
+    return tiles
+        .filter(t => t.getBoundingClientRect().top <= minTop + 40)
+        .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+}
+
+// Is this button sitting on top of the tile? Scoping by GEOMETRY rather than by climbing
+// the DOM does two things a parent walk cannot: the page header's own ⋮ buttons are
+// excluded however the tree is shaped, and an overlay rendered through a React portal
+// (outside the tile's ancestors entirely) is still found.
+function overTile(el, tileRect) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    return cx >= tileRect.left - 24 && cx <= tileRect.right + 24 &&
+           cy >= tileRect.top  - 24 && cy <= tileRect.bottom + 24;
+}
+
+// The ⋮ button Flow reveals on a hovered clip tile.
+function findTileMenuButton(tile) {
+    const t = tile.getBoundingClientRect();
+    for (const b of document.querySelectorAll('button, [role="button"]')) {
+        if (!isVisible(b) || !overTile(b, t)) continue;
+        const txt  = (b.textContent || '').trim();
+        const name = `${accName(b)} ${b.getAttribute('aria-label') || ''}`.toLowerCase();
+        if (txt.includes('more_vert') || txt.includes('more_horiz') ||
+            txt === '⋮' || txt === '…' ||
+            /more option|more action|options|ตัวเลือก|เพิ่มเติม/.test(name) ||
+            name.trim() === 'more') {
+            return b;
+        }
+    }
+    return null;
+}
+
+// A visible menu entry whose text (or accessible name) matches. `excludeRe` keeps the
+// paid/undesired resolutions out.
+function findMenuItem(re, excludeRe) {
+    for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], li, button, a')) {
+        if (!isVisible(el)) continue;
+        const t = (el.textContent || '').trim();
+        if (!t) continue;
+        if (excludeRe && excludeRe.test(t)) continue;
+        if (re.test(t) || re.test(accName(el))) return el;
+    }
+    return null;
+}
+
+function dumpMenuItems(what) {
+    log(`DIAG: ${what} — visible menu entries:`);
+    let n = 0;
+    for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], li, button, a')) {
+        if (!isVisible(el)) continue;
+        const t = (el.textContent || '').trim();
+        if (!t || t.length > 60) continue;
+        if (++n > 14) break;
+        log(`  "${t.slice(0, 40)}" acc="${accName(el).slice(0, 24)}"`);
+    }
+    if (!n) log('  (none)');
 }
 
 async function waitForVideoReady(clipsBefore, timeout = 150) {
@@ -724,54 +1200,92 @@ async function leaveClipViewer() {
     await sleep(1500);
 }
 
-// Current Flow UI: open the newest clip and drive "Download media" → "720p Original
-// size", with background.js renaming the resulting download to this scene's filename so
-// monitor.py's DownloadsHandler files it into working/. 720p is the resolution the clip
-// was generated at, so it is the only option that is both already rendered and free:
-// "1080p Upscaled" re-renders it and "4K Upscaled" spends 50 credits; 270p is a GIF.
-// Returns true once the rename was applied — the caller then waits for the file.
-async function downloadClipViaViewer(videoFilename) {
+// Save the newest clip the way the UI is meant to be driven:
+//
+//   HOVER the newest tile (never click it) → the ⋮ appears on the tile → click ⋮ →
+//   "Download" → "720p".
+//
+// **Never click the clip tile.** A click opens Flow's full-screen viewer; the layout that
+// leaves behind is not what the rest of this run can drive, and the old
+// downloadClipViaViewer() did exactly that as its first step. Do not reintroduce it.
+// 720p is also the only resolution to take automatically: it is what the clip was
+// generated at, so it is already rendered and free, while "1080p Upscaled" re-renders it
+// and "4K Upscaled" spends 50 credits; 270p is a GIF.
+// Returns true once the rename was armed and the download started — the caller then waits
+// for the file to land in working/.
+async function downloadNewestClip(videoFilename) {
     const tile = newestClipTile();
-    if (!tile) return false;
-    dispatchPointerClick(tile);
-    await sleep(4000);
+    if (!tile) { log('No clip thumbnail found to download'); return false; }
+    try { tile.scrollIntoView({ block: 'nearest' }); } catch {}
+    await sleep(400);
 
-    const dl = findVisible('[aria-label="Download media"]');
-    if (!dl) {
-        log('Download media button not found in the clip viewer');
-        await leaveClipViewer();
+    // 1. Hover the tile until its ⋮ button appears. Hover only — see above.
+    let menuBtn = null;
+    for (let attempt = 0; attempt < 4 && !menuBtn; attempt++) {
+        dispatchHover(tile);
+        await sleep(900);
+        menuBtn = findTileMenuButton(tile);
+    }
+    if (!menuBtn) {
+        const t = tile.getBoundingClientRect();
+        log('DIAG: hovering the clip tile revealed no ⋮ button. Buttons over the tile:');
+        let n = 0;
+        for (const b of document.querySelectorAll('button, [role="button"]')) {
+            if (!isVisible(b) || !overTile(b, t)) continue;
+            if (++n > 10) break;
+            log(`  txt="${(b.textContent || '').trim().slice(0, 24)}"`
+              + ` acc="${accName(b).slice(0, 24)}" aria="${b.getAttribute('aria-label') || ''}"`);
+        }
+        if (!n) log(`  (none over the tile at ${Math.round(t.left)},${Math.round(t.top)})`);
         return false;
     }
 
-    // Arm the rename BEFORE the click — the reply lands once the download starts.
+    // 2. Open the tile's own menu.
+    dispatchPointerClick(menuBtn);
+    await sleep(1200);
+
+    // 3. "Download" — a submenu trigger, so click it and hover it as well; menus differ
+    //    on which gesture expands them.
+    const dl = findMenuItem(/^(ดาวน์โหลด|Download)$/i) || findMenuItem(/download|ดาวน์โหลด/i);
+    if (!dl) {
+        dumpMenuItems('no "Download" entry in the clip menu');
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        return false;
+    }
+    dispatchPointerClick(dl);
+    await sleep(1000);
+    dispatchHover(dl);
+    await sleep(800);
+
+    // 4. Arm the rename BEFORE the click that starts the download, then take 720p only.
+    //    A missing 720p is a hard stop: nothing else may be clicked, because the
+    //    alternatives re-render the clip or cost credits.
+    let pick = null;
+    for (let attempt = 0; attempt < 3 && !pick; attempt++) {
+        if (attempt > 0) { dispatchHover(dl); await sleep(900); }
+        pick = findMenuItem(/720/, /4K|GIF|1080|Upscal/i);
+    }
+    if (!pick) {
+        dumpMenuItems('no 720p option under Download');
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        return false;
+    }
+
     const armed = chrome.runtime
         .sendMessage({ action: 'expectClipDownload', filename: videoFilename, timeoutMs: 90000 })
         .catch(() => null);
-
-    dispatchPointerClick(dl);
-    await sleep(2000);
-
-    let picked = null;
-    outer:
-    for (const want of [/Original size/i, /720p/i, /1080p/i]) {
-        for (const el of document.querySelectorAll('[role="menuitem"], [role="option"], li, button')) {
-            if (!isVisible(el)) continue;
-            if (el.getAttribute('aria-label') === 'Download media') continue;
-            const t = (el.textContent || '').trim();
-            if (!t || /4K|GIF/i.test(t)) continue;       // never spend credits
-            if (want.test(t)) {
-                dispatchPointerClick(el);
-                picked = t.slice(0, 40);
-                break outer;
-            }
-        }
-    }
-    if (!picked) log('No safe download resolution offered');
+    const label = (pick.textContent || '').trim().slice(0, 40);
+    dispatchPointerClick(pick);
 
     const resp = await armed;
-    await leaveClipViewer();
+    // Tidy up: close any menu still open, and bail out of the viewer if something did
+    // manage to open it, so the next scene starts from the normal layout.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await sleep(500);
+    if (findVisible('[aria-label="Back button to go to previous page"]')) await leaveClipViewer();
+
     if (resp && resp.ok) {
-        log(`Clip download started (${picked}) → ${videoFilename}`);
+        log(`Clip download started (${label}) → ${videoFilename}`);
         return true;
     }
     log(`Clip download not captured${resp && resp.error ? ` (${resp.error})` : ''}`);
@@ -885,9 +1399,20 @@ async function clearSelectorErrors(pid) {
     await chrome.storage.local.remove(`sel_errors_${pid}`);
 }
 
+// The retry flag is only meaningful for the few seconds between reloadForRetry() and the
+// reload it triggers, so it carries a timestamp and expires. A run the user stops in that
+// window (or a crashed tab) used to leave the flag set for ever, and the NEXT fresh run
+// then took the isRetry path: no clickNewProject(), so it resumed inside the old project —
+// the one already full of duplicate uploads from the failed loop. Legacy values (the
+// string '1') have no timestamp and are treated as absent, i.e. as a fresh run.
+const RETRY_FLAG_TTL_MS = 5 * 60 * 1000;
+
 async function isRetryAfterReload(pid) {
-    const r = await chrome.storage.local.get(`flow_retry_${pid}`);
-    return r[`flow_retry_${pid}`] === '1';
+    const key = `flow_retry_${pid}`;
+    const r = await chrome.storage.local.get(key);
+    const v = r[key];
+    if (typeof v !== 'number') return false;
+    return Date.now() - v < RETRY_FLAG_TTL_MS;
 }
 
 async function clearRetryFlag(pid) {
@@ -899,7 +1424,7 @@ async function reloadForRetry(pid, reason) {
     log(`${reason} — reloading page for clean retry`);
     // Flag tells the next run (after reload) to skip clickNewProject + settings —
     // the page reloads back into the same project, compose bar already ready.
-    await chrome.storage.local.set({ [`flow_retry_${pid}`]: '1' });
+    await chrome.storage.local.set({ [`flow_retry_${pid}`]: Date.now() });
     await sleep(2000);
     window.location.reload();
     // Execution stops here. Page reload fires tabReady → background re-sends
@@ -961,6 +1486,8 @@ async function runVideos(project) {
         await clearRateLimitRetries(pid);   // clean throttle budget
         await clearSelectorErrors(pid);     // clean selector budget
         await clearSceneFails(pid, project.scenes);
+        await clearLastAttached(pid);       // a brand-new project has an empty Start slot
+        await clearDroppedFiles(pid);       // ...and an empty media library
         await clickNewProject();
         await waitForCompose();
         // Set Video / Frames / ratio / x1 / Veo Lite automatically. The 20s window below
@@ -1014,13 +1541,22 @@ async function runVideos(project) {
 
             try {
                 const imgPath = `pages/${page}/working/${pid}-scene-${nn}.png`;
-                await uploadSceneImage(imgPath, `${pid}-scene-${nn}.png`);
+                await uploadSceneImage(pid, imgPath, `${pid}-scene-${nn}.png`);
                 await jitter(4000, 3500); // 4–7.5s: let compose bar settle after panel closes
 
                 const videoPrompt = cutAtEndMarker(scene.video_prompt.trim(), 'VIDEO')
                     + '\n\n--- The End of VIDEO PROMPTS ---';
                 await fillVideoPrompt(videoPrompt);
                 await jitter(1500, 1500); // 1.5–3s: wait for Slate re-render
+
+                // Attaching the frame re-renders the compose bar, so check again right
+                // here rather than trusting the fill. Generating with an empty box is
+                // never acceptable: Flow either refuses, or returns a clip that ignored
+                // the prompt and still counts as this scene's deliverable.
+                if (!promptFilled(videoPrompt)) {
+                    dumpPromptEditors();
+                    throw new Error('SELECTOR: compose bar lost the video prompt before Generate');
+                }
 
                 const clipsBefore = countVideoClips();
                 await clickGenerate();
@@ -1037,14 +1573,15 @@ async function runVideos(project) {
                 }
 
                 const videoFilename = `${pid}-scene-${nn}-vdo.mp4`;
-                const card = getVideoCardEl(clipsBefore);
 
-                // Primary (current UI): clip viewer → Download media, renamed in flight
-                // by background.js so monitor.py files it into working/.
-                let started = await downloadClipViaViewer(videoFilename);
+                // Primary (current UI): hover the newest tile → its ⋮ → Download → 720p,
+                // renamed in flight by background.js so monitor.py files it into working/.
+                let started = await downloadNewestClip(videoFilename);
 
-                // Fallback (legacy UI): the card's right-click menu yields a real URL.
+                // Fallback (legacy UI only): the card's right-click menu yields a real URL.
+                // Unreachable on the current UI, which has no <video> elements at all.
                 if (!started) {
+                    const card = getVideoCardEl(clipsBefore);
                     const menuUrl = card ? await getContextMenuVideoUrl(card.el) : null;
                     if (menuUrl) {
                         await chrome.runtime.sendMessage({
@@ -1052,23 +1589,31 @@ async function runVideos(project) {
                         });
                         log(`Native download triggered: ${videoFilename}`);
                         started = true;
+                    } else {
+                        const src = card ? (card.v.src || card.v.currentSrc || '') : '';
+                        const streamUrl = (src && !src.startsWith('blob:')) ? src : null;
+                        if (streamUrl) {
+                            log(`Menu unavailable — streaming URL fallback for ${videoFilename}`);
+                            await downloadVideoToServer(streamUrl, videoFilename);
+                            started = true;
+                        }
                     }
                 }
 
-                if (started) {
-                    log(`Waiting for ${videoFilename} to appear in working/...`);
-                    const appeared = await waitForFileInWorking(page, videoFilename, 180000);
-                    if (!appeared) {
-                        reloadReason = `Scene ${nn}: native download timed out after 3 min`;
-                        break;
-                    }
-                } else {
-                    // Fallback: streaming URL → fetch+POST to monitor.py
-                    const src = card ? (card.v.src || card.v.currentSrc || '') : '';
-                    const streamUrl = (src && !src.startsWith('blob:')) ? src : null;
-                    if (!streamUrl) { log(`Scene ${nn}: no video URL found`); continue; }
-                    log(`Context menu unavailable — streaming URL fallback for ${videoFilename}`);
-                    await downloadVideoToServer(streamUrl, videoFilename);
+                // No download route worked. This used to `continue`, which sent the scene
+                // straight back through upload → prompt → Generate and spent a second
+                // generation on a clip that already existed. A UI miss here is systemic,
+                // so SELECTOR: stops loudly with the scene intact instead.
+                if (!started) {
+                    throw new Error('SELECTOR: could not start the clip download '
+                                  + '(hover tile → ⋮ → Download → 720p)');
+                }
+
+                log(`Waiting for ${videoFilename} to appear in working/...`);
+                const appeared = await waitForFileInWorking(page, videoFilename, 180000);
+                if (!appeared) {
+                    reloadReason = `Scene ${nn}: download timed out after 3 min`;
+                    break;
                 }
 
                 doneCount++;
@@ -1143,6 +1688,8 @@ async function runVideos(project) {
     await clearSceneFails(pid, project.scenes);
     await clearRateLimitRetries(pid);
     await clearSelectorErrors(pid);
+    await clearLastAttached(pid);
+    await clearDroppedFiles(pid);
     log(`=== VIDEO PHASE COMPLETE: ${pid} — ${doneCount}/${project.total_scenes} videos done ===`);
     const completionAction = anySceneSkipped ? 'videosPartialComplete' : 'videosComplete';
     chrome.runtime.sendMessage({ action: completionAction, projectId: pid });

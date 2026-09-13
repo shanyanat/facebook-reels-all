@@ -354,10 +354,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                             return r.width > 0 && r.height > 0 &&
                                    getComputedStyle(el).visibility !== 'hidden';
                         };
-                        const target = [...document.querySelectorAll('button, [role="button"]')]
-                            .find(el => vis(el) &&
-                                  ['Start', 'เริ่ม', 'เริ่มต้น'].includes((el.textContent || '').trim()))
-                            || document.body;
+
+                        // Match the slot's ACCESSIBLE NAME, not its raw textContent. The
+                        // terminal twin finds it with Playwright's
+                        // get_by_role("button", name="Start", exact=True), and that name
+                        // computation drops aria-hidden icon spans — while textContent keeps
+                        // them, and Material buttons glue the icon ligature to the label
+                        // ("image" + "Start" → "imageStart"). So the old exact-text test
+                        // missed the slot, the drop silently landed on document.body, and
+                        // the picker step then had no slot to click: the scene looped
+                        // re-uploading the same image forever.
+                        const NAMES = ['Start', 'เริ่ม', 'เริ่มต้น'];
+                        const nameText = node => {
+                            if (node.nodeType === 3) return node.nodeValue || '';
+                            if (node.nodeType !== 1) return '';
+                            if (node.getAttribute('aria-hidden') === 'true') return '';
+                            if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE') return '';
+                            let s = '';
+                            for (const c of node.childNodes) s += nameText(c);
+                            return s;
+                        };
+                        const accName = el => {
+                            const aria = (el.getAttribute('aria-label') || '').trim();
+                            if (aria) return aria;
+                            return nameText(el).replace(/\s+/g, ' ').trim();
+                        };
+                        const isSlot = el => {
+                            if (NAMES.includes(accName(el))) return true;
+                            const raw = (el.textContent || '').trim();
+                            return NAMES.some(n => raw.endsWith(n) && raw.length <= n.length + 24);
+                        };
+
+                        const buttons = [...document.querySelectorAll('button, [role="button"]')];
+                        const slot = buttons.find(el => vis(el) && isSlot(el));
+                        const target = slot || document.body;
 
                         const dt = new DataTransfer();
                         dt.items.add(file);
@@ -369,7 +399,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                         for (const type of ['dragenter', 'dragover', 'drop']) {
                             target.dispatchEvent(new DragEvent(type, opts));
                         }
-                        return 'dropped on ' + ((target.textContent || 'page').trim().slice(0, 12));
+
+                        if (slot) return 'dropped on slot "' + accName(slot).slice(0, 16) + '"';
+                        // A body drop still ingests the file into the library, so the run can
+                        // continue — but say so plainly, and name the candidates, because it
+                        // means nothing got attached to the Start frame.
+                        const vh = window.innerHeight;
+                        const near = buttons.filter(el => vis(el) &&
+                                el.getBoundingClientRect().top > vh * 0.5)
+                            .slice(0, 10)
+                            .map(el => '"' + (el.textContent || '').trim().slice(0, 20) + '"/acc="'
+                                     + accName(el).slice(0, 20) + '"')
+                            .join(' ');
+                        return 'dropped on body (NO Start slot found) | lower-viewport buttons: '
+                             + (near || 'none');
                     } catch (e) {
                         return 'error:' + (e && e.message);
                     }
@@ -450,7 +493,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 });
                 editor.insertText(text);
 
-                return 'ok:' + (editorEl.textContent || '').trim().length;
+                // Report the editor's REAL text length. Slate renders its placeholder
+                // ("What do you want to create?") in a child span INSIDE the editable, so a
+                // raw textContent read makes an empty box look filled: this returned `ok:27`
+                // for a failed insert, the caller saw "length > 0", logged "Prompt filled",
+                // and its textarea fallback never ran. Generate then fired on an empty box.
+                let real = editorEl;
+                try {
+                    real = editorEl.cloneNode(true);
+                    real.querySelectorAll('[data-slate-placeholder], [data-placeholder]')
+                        .forEach(function (ph) { ph.remove(); });
+                } catch (e) { real = editorEl; }
+                return 'ok:' + (real.textContent || '').trim().length;
             } catch (e) {
                 return 'error:' + e.message;
             }
