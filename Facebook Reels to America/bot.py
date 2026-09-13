@@ -1068,7 +1068,7 @@ Examples:
   py bot.py archive reel_0001
         """,
     )
-    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "cleanup", "pipeline", "force-complete", "handoff"])
+    parser.add_argument("command", choices=["status", "queue", "images", "videos", "archive", "addpage", "updateprompts", "renamepage", "collect", "reconcile", "prune", "preflight", "doctor", "cleanup", "pipeline", "force-complete", "handoff"])
     parser.add_argument("project_id", nargs="?", help="reel_0001, page name, 'all' for pipeline, old page name for renamepage, or 'apply' for reconcile/prune")
     parser.add_argument("new_name", nargs="?", help="new page name (renamepage only)")
     args = parser.parse_args()
@@ -1122,6 +1122,10 @@ Examples:
     if args.command == "preflight":
         from preflight import preflight
         sys.exit(0 if preflight() else 1)
+
+    if args.command == "doctor":
+        from doctor import doctor
+        sys.exit(0 if doctor() else 1)
 
     if args.command == "cleanup":
         do_cleanup(apply=(args.project_id == "apply"))

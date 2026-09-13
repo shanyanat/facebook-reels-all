@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reels Parallel Generator",
-  "version": "1.0",
+  "version": "2026.9.13",
   "description": "Parallel image and video generation for Facebook Reels",
   "permissions": ["tabs", "downloads", "scripting", "storage", "alarms", "sidePanel", "notifications"],
   "host_permissions": [

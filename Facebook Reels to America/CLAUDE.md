@@ -13,6 +13,7 @@ All commands run from the project root in Warp Terminal:
 ```
 cd "C:\Claude code\ปรึกษาส่วนตัว\Facebook Reels to America"
 
+py bot.py doctor                    # FIRST THING after a git pull on any machine — see below
 py bot.py addpage page-<name>       # create folder structure for a new Facebook page
 py bot.py queue                     # scan briefs/ and register new .txt files into the queue
 py bot.py status                    # show all projects and their current status
@@ -30,6 +31,19 @@ Install dependencies (once per machine):
 pip install playwright watchdog
 playwright install chromium
 ```
+
+### After every `git pull` on any machine: `py bot.py doctor`
+
+**A successful `git pull` does not mean the machine works.** `doctor` (`doctor.py`, stdlib-only, read-only) is what turns "the pull worked" into "this machine can actually run". It prints `[ OK ]` / `[WARN]` / `[FAIL]` per check with the exact fix, and exits 1 if anything FAILed. It never creates folders, installs anything, or starts `monitor.py` — `preflight.py` is the one that mutates state.
+
+Two things a pull genuinely cannot do, which is why this exists:
+
+1. **`git pull` never reloads the Chrome extension.** Chrome keeps running the code it loaded until you press Reload at `chrome://extensions`. A machine can be fully up to date on disk and still run week-old `flow.js`. `manifest.json`'s `version` is now a `YYYY.M.D` date stamp **that must be bumped on every extension change** — Chrome prints it under the extension name, so you can compare it to what `doctor` reports from disk. It was frozen at `1.0` until 2026-09-13, which made a stale extension invisible: the symptom was Google Flow's own **"failed to upload"** toast when attaching a scene image, because pre-`072264c` code built its `DataTransfer` in the isolated world Flow's drop handler cannot see.
+2. **`data/`, `pages/`, `complete/` and the Chrome profile are gitignored on purpose** (see "Never copy … between machines"). Their absence on a fresh clone is normal, so `doctor` reports it as `[WARN]` with the command that creates it, never as an error.
+
+`doctor` also checks: commits behind `origin/master`, uncommitted local drift, `playwright` + `watchdog` imports, that `playwright install chromium` actually ran, that `monitor.py` answers on `localhost:7788` (the extension fetches **every** scene image from it — without it Flow receives no file at all), `C:/temp/chrome-bot`, the sibling `../Ai Auto Editor/main.py`, and free disk.
+
+What it **cannot** check, and must be confirmed by hand: the version Chrome shows, and **which Google account is signed into that machine's Chrome** — Flow rejects uploads for an account without a plan, and every machine has its own login.
 
 ## Architecture
 
