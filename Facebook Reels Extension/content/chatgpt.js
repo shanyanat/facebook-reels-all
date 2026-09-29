@@ -52,7 +52,8 @@ async function activateImageMode() {
     await sleep(1200);
 
     // Strategy 1: exact text button
-    for (const name of ['Create an image', 'Create image']) {
+    // Thai names too — the backup machine's ChatGPT runs in Thai.
+    for (const name of ['Create an image', 'Create image', 'สร้างรูปภาพ', 'สร้างภาพ']) {
         for (const btn of document.querySelectorAll('button')) {
             if (btn.textContent.trim() === name && isVisible(btn)) {
                 btn.click(); await sleep(800); log(`Image mode: "${name}"`); return;
@@ -62,7 +63,8 @@ async function activateImageMode() {
 
     // Strategy 2: aria-label
     const ariaBtn = findVisible(
-        "button[aria-label*='Create an image' i], button[aria-label*='Create image' i]"
+        "button[aria-label*='Create an image' i], button[aria-label*='Create image' i], " +
+        "button[aria-label*='สร้างรูปภาพ'], button[aria-label*='สร้างภาพ']"
     );
     if (ariaBtn) { ariaBtn.click(); await sleep(800); log('Image mode: aria-label'); return; }
 
@@ -72,7 +74,7 @@ async function activateImageMode() {
         plusBtn.click();
         await sleep(1200);
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-            acceptNode: n => ['Create image', 'Create an image'].includes(n.textContent.trim())
+            acceptNode: n => ['Create image', 'Create an image', 'สร้างรูปภาพ', 'สร้างภาพ'].includes(n.textContent.trim())
                 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
         });
         let textNode;
@@ -96,7 +98,7 @@ async function activateImageMode() {
 
 async function selectAspectRatio(ratio = '9:16') {
     await sleep(1200);
-    const altMap = { '9:16': ['portrait','9:16'], '1:1': ['square','1:1'], '16:9': ['landscape','16:9'] };
+    const altMap = { '9:16': ['portrait','9:16','แนวตั้ง'], '1:1': ['square','1:1','สี่เหลี่ยมจัตุรัส'], '16:9': ['landscape','16:9','แนวนอน'] };
     const keywords = altMap[ratio] || [ratio];
     for (const kw of keywords) {
         for (const el of document.querySelectorAll("button, [role='option'], [role='radio'], [role='tab']")) {
@@ -164,8 +166,29 @@ async function fillChatInput(text) {
     log(`Filled input (${text.length} chars)`);
 }
 
+// The Send button, in any UI language. Stable ids first; the aria-label only matches
+// English ("Send prompt"), so a Thai ChatGPT ("ส่ง…") and the newer composer — the one
+// with the Chat/Work switch — fell through and every reel died with "Send button not
+// found or disabled". The composer's own submit button is the language-free fallback.
+const SEND_SELECTORS = [
+    'button[data-testid="send-button"]',
+    'button[data-testid="composer-submit-button"]',
+    '#composer-submit-button',
+    'button[aria-label*="Send" i]',
+    'button[aria-label*="ส่ง"]',
+    'form button[type="submit"]',
+];
+
+function findSendButton() {
+    for (const sel of SEND_SELECTORS) {
+        const btn = findVisible(sel);
+        if (btn) return btn;
+    }
+    return null;
+}
+
 function _sendBtnEnabled() {
-    const btn = document.querySelector('button[data-testid="send-button"], button[aria-label*="Send"]');
+    const btn = findSendButton();
     return btn && !btn.disabled;
 }
 
@@ -245,18 +268,35 @@ async function until(fn, timeout, interval = 500) {
     return false;
 }
 
+function _composerText() {
+    const el = document.querySelector(COMPOSE);
+    return el ? (el.textContent || el.value || '').trim() : '';
+}
+
 async function clickSend() {
-    const SEND = 'button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label*="Send"]';
     const deadline = Date.now() + 20000;
     let btn;
     while (Date.now() < deadline) {
-        btn = findVisible(SEND);
+        btn = findSendButton();
         if (btn && !btn.disabled) break;
         await sleep(500);
     }
-    if (!btn) throw new Error('Send button not found or disabled');
-    btn.click();
-    log('Send clicked');
+    if (btn && !btn.disabled) {
+        btn.click();
+        log('Send clicked');
+        await sleep(600);
+        return;
+    }
+
+    // No usable button — press Enter in the composer from the page's own world, the
+    // way a person sends. Proven sent only if the composer empties or generation starts.
+    log(`DIAG: send button ${btn ? 'disabled' : 'not found'} — pressing Enter in the composer`);
+    const res = await chrome.runtime.sendMessage({ action: 'pressEnterCompose' }).catch(() => null);
+    log(`Enter: ${res?.result || res?.error || 'no response'}`);
+    const sent = await until(() => _composerText().length < 5 ||
+                                   findVisible('[data-testid="stop-button"]'), 8000);
+    if (!sent) throw new Error('Send button not found or disabled');
+    log('Sent with Enter');
     await sleep(600);
 }
 

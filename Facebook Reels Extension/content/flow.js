@@ -1399,6 +1399,55 @@ async function clearSelectorErrors(pid) {
     await chrome.storage.local.remove(`sel_errors_${pid}`);
 }
 
+// "Generate was already clicked for this scene" — survives reloadForRetry(). Every
+// failure after Generate (no ⋮ / Download / 720p, rename not captured, file never reached
+// working/, a generation that outlived the 210s wait) used to reload and run the scene
+// from the top again: upload → prompt → Generate, spending credits on a clip that already
+// existed in the grid. With this marker a retry downloads the existing clip instead.
+// `before` is the clip count just before Generate, so "count > before" means ours landed.
+// Cleared on success, on a fresh run (New Project = empty grid) and at phase end.
+const GENERATED_TTL_MS = 30 * 60 * 1000;
+
+async function getGenerated(pid, nn) {
+    const key = `flow_gen_${pid}_${nn}`;
+    const r = await chrome.storage.local.get(key);
+    const v = r[key];
+    if (!v || typeof v.before !== 'number' || Date.now() - v.at > GENERATED_TTL_MS) return null;
+    return v;
+}
+
+async function setGenerated(pid, nn, before) {
+    await chrome.storage.local.set({ [`flow_gen_${pid}_${nn}`]: { before, at: Date.now() } });
+}
+
+async function clearGenerated(pid, nn) {
+    await chrome.storage.local.remove(`flow_gen_${pid}_${nn}`);
+}
+
+async function clearAllGenerated(pid, allScenes) {
+    const keys = allScenes.map(s => `flow_gen_${pid}_${String(s.scene_num).padStart(2, '0')}`);
+    if (keys.length) await chrome.storage.local.remove(keys);
+}
+
+// An earlier attempt already clicked Generate for this scene. True when its clip is in
+// the grid (or finishes rendering within one normal wait) — download it, don't generate.
+// False only when it never shows up, i.e. that generation really failed.
+async function adoptEarlierClip(pid, nn) {
+    const gen = await getGenerated(pid, nn);
+    if (!gen) return false;
+    // The grid fills in over a few seconds after a reload — give it time before counting.
+    try { await waitFor(() => countVideoClips() > gen.before, 15000, 1000); } catch {}
+    if (countVideoClips() > gen.before) {
+        log(`Scene ${nn}: clip from the earlier attempt is in the grid — downloading it, NOT generating again`);
+        return true;
+    }
+    log(`Scene ${nn}: earlier generation not in the grid yet — waiting for it before paying for another`);
+    if (await waitForVideoReady(gen.before, 210) === true) return true;
+    log(`Scene ${nn}: earlier generation never appeared — generating again`);
+    await clearGenerated(pid, nn);
+    return false;
+}
+
 // The retry flag is only meaningful for the few seconds between reloadForRetry() and the
 // reload it triggers, so it carries a timestamp and expires. A run the user stops in that
 // window (or a crashed tab) used to leave the flag set for ever, and the NEXT fresh run
@@ -1486,6 +1535,7 @@ async function runVideos(project) {
         await clearRateLimitRetries(pid);   // clean throttle budget
         await clearSelectorErrors(pid);     // clean selector budget
         await clearSceneFails(pid, project.scenes);
+        await clearAllGenerated(pid, project.scenes);   // New Project = empty grid, nothing to adopt
         await clearLastAttached(pid);       // a brand-new project has an empty Start slot
         await clearDroppedFiles(pid);       // ...and an empty media library
         await clickNewProject();
@@ -1540,36 +1590,40 @@ async function runVideos(project) {
             }
 
             try {
-                const imgPath = `pages/${page}/working/${pid}-scene-${nn}.png`;
-                await uploadSceneImage(pid, imgPath, `${pid}-scene-${nn}.png`);
-                await jitter(4000, 3500); // 4–7.5s: let compose bar settle after panel closes
+                // A clip this scene already paid for is downloaded, never generated twice.
+                if (!(await adoptEarlierClip(pid, nn))) {
+                    const imgPath = `pages/${page}/working/${pid}-scene-${nn}.png`;
+                    await uploadSceneImage(pid, imgPath, `${pid}-scene-${nn}.png`);
+                    await jitter(4000, 3500); // 4–7.5s: let compose bar settle after panel closes
 
-                const videoPrompt = cutAtEndMarker(scene.video_prompt.trim(), 'VIDEO')
-                    + '\n\n--- The End of VIDEO PROMPTS ---';
-                await fillVideoPrompt(videoPrompt);
-                await jitter(1500, 1500); // 1.5–3s: wait for Slate re-render
+                    const videoPrompt = cutAtEndMarker(scene.video_prompt.trim(), 'VIDEO')
+                        + '\n\n--- The End of VIDEO PROMPTS ---';
+                    await fillVideoPrompt(videoPrompt);
+                    await jitter(1500, 1500); // 1.5–3s: wait for Slate re-render
 
-                // Attaching the frame re-renders the compose bar, so check again right
-                // here rather than trusting the fill. Generating with an empty box is
-                // never acceptable: Flow either refuses, or returns a clip that ignored
-                // the prompt and still counts as this scene's deliverable.
-                if (!promptFilled(videoPrompt)) {
-                    dumpPromptEditors();
-                    throw new Error('SELECTOR: compose bar lost the video prompt before Generate');
-                }
+                    // Attaching the frame re-renders the compose bar, so check again right
+                    // here rather than trusting the fill. Generating with an empty box is
+                    // never acceptable: Flow either refuses, or returns a clip that ignored
+                    // the prompt and still counts as this scene's deliverable.
+                    if (!promptFilled(videoPrompt)) {
+                        dumpPromptEditors();
+                        throw new Error('SELECTOR: compose bar lost the video prompt before Generate');
+                    }
 
-                const clipsBefore = countVideoClips();
-                await clickGenerate();
+                    const clipsBefore = countVideoClips();
+                    await clickGenerate();
+                    await setGenerated(pid, nn, clipsBefore);   // from here on, retries download only
 
-                const ready = await waitForVideoReady(clipsBefore, 210);
-                if (ready === 'ratelimit') {
-                    // Transient Google throttle — handled below WITHOUT a fail penalty.
-                    rateLimited = true;
-                    break;
-                }
-                if (!ready) {
-                    reloadReason = `Scene ${nn}: generation failed/timed out`;
-                    break;
+                    const ready = await waitForVideoReady(clipsBefore, 210);
+                    if (ready === 'ratelimit') {
+                        // Transient Google throttle — handled below WITHOUT a fail penalty.
+                        rateLimited = true;
+                        break;
+                    }
+                    if (!ready) {
+                        reloadReason = `Scene ${nn}: generation failed/timed out`;
+                        break;
+                    }
                 }
 
                 const videoFilename = `${pid}-scene-${nn}-vdo.mp4`;
@@ -1600,10 +1654,9 @@ async function runVideos(project) {
                     }
                 }
 
-                // No download route worked. This used to `continue`, which sent the scene
-                // straight back through upload → prompt → Generate and spent a second
-                // generation on a clip that already existed. A UI miss here is systemic,
-                // so SELECTOR: stops loudly with the scene intact instead.
+                // No download route worked. A UI miss here is systemic, so SELECTOR:
+                // reloads without a scene penalty — and the flow_gen_ marker set after
+                // Generate makes that retry download this clip, not generate a new one.
                 if (!started) {
                     throw new Error('SELECTOR: could not start the clip download '
                                   + '(hover tile → ⋮ → Download → 720p)');
@@ -1619,6 +1672,7 @@ async function runVideos(project) {
                 doneCount++;
                 log(`✓ Scene ${nn} complete — ${doneCount}/${project.total_scenes} videos done`);
                 success = true;
+                await clearGenerated(pid, nn);      // saved — the next scene starts clean
                 await clearRateLimitRetries(pid);   // a save proves we're not throttled — reset budget
                 await clearSelectorErrors(pid);     // UI worked — reset selector budget
 
@@ -1686,6 +1740,7 @@ async function runVideos(project) {
     }
 
     await clearSceneFails(pid, project.scenes);
+    await clearAllGenerated(pid, project.scenes);
     await clearRateLimitRetries(pid);
     await clearSelectorErrors(pid);
     await clearLastAttached(pid);
